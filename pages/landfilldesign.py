@@ -27,7 +27,6 @@ import json
 import datetime as dt
 from dataclasses import dataclass, asdict
 from typing import List, Tuple, Optional
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -366,14 +365,27 @@ def compute_boq(section: dict, liner: dict, rates: dict, footprint_area: float,
 # ---------------------------
 
 def export_excel(inputs: dict, section: dict, boq: pd.DataFrame, summary: pd.DataFrame) -> bytes:
-    with pd.ExcelWriter(io.BytesIO(), engine="xlsxwriter") as writer:
-        pd.DataFrame({k: [v] for k, v in inputs.items()}).to_excel(writer, sheet_name="Inputs", index=False)
-        pd.DataFrame(section, index=[0]).to_excel(writer, sheet_name="Section", index=False)
+    # Choose an available engine (prefer XlsxWriter)
+    engine = "xlsxwriter"
+    try:
+        import xlsxwriter  # noqa: F401
+    except Exception:
+        engine = "openpyxl"
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine=engine) as writer:
+        # Inputs on one row
+        pd.DataFrame({k: [v] for k, v in inputs.items()}).to_excel(
+            writer, sheet_name="Inputs", index=False
+        )
+        # Section dictionary as a single-row sheet (expand dict to columns)
+        pd.DataFrame([section]).to_excel(writer, sheet_name="Section", index=False)
+        # BOQ and Summary
         boq.to_excel(writer, sheet_name="BOQ", index=False)
         summary.to_excel(writer, sheet_name="Summary", index=False)
-        writer.save()
-        return writer.book.filename.getvalue()
 
+    buffer.seek(0)
+    return buffer.getvalue()
 
 def export_kml(coords: List[Tuple[float, float]]) -> Optional[bytes]:
     if simplekml is None:
@@ -601,8 +613,13 @@ with stab_tab:
 
     # Download slice table
     csv_buf = df_slices.to_csv(index=False).encode("utf-8")
-    st.download_button("Download Slice Table (CSV)", data=csv_buf, file_name="slice_table.csv", mime="text/csv")
-
+#   st.download_button("Download Slice Table (CSV)", data=csv_buf, file_name="slice_table.csv", mime="text/csv")
+    st.download_button(
+        "Download Excel (Inputs+BOQ)",
+        data=excel_bytes,
+        file_name="landfill_design.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 # ---------------------------
 # 4) BOQ & Costing
 # ---------------------------
