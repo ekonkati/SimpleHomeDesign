@@ -1,6 +1,10 @@
 streamlit
-numpy
 pandas
+numpy
 matplotlib
+XlsxWriter
+openpyxl
 reportlab
+simplekml
+shapely
 fpdf2
