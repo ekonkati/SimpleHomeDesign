@@ -1,696 +1,543 @@
-# Landfill Design, Stability, Visualization & Submission App (Streamlit)
-# -------------------------------------------------------------------
-# Implements a practical MVP covering the uploaded specification:
-# - Project setup & site data (coords, polygon import, DEM avg)
-# - Waste type presets (MSW/Hazardous) with liner templates
-# - Geometry builder (berms, lifts, slopes) + volumes & life calc
-# - Slope stability (Bishop simplified + Janbu/Fellenius quick checks)
-# - Pseudo-static seismic option
-# - BOQ & costing with editable rates
-# - Visualizations: 2D cross-sections, plan footprint preview
-# - Exports: Excel (BOQ & inputs), CSV (slice table), KML (footprint), PDF (report)
-# - Admin: CPCB/EPA toggle, unit presets (SI/Imperial)
-#
-# Notes:
-# * Designed to run as a single-file Streamlit app for ease of adoption.
-# * Uses only widely available libraries. Optional deps are gated with try/except.
-# * For non-rectangular polygons, KML/GeoJSON import is supported (simplekml optional export).
-# * 3D & DWG/DXF export are stubbed with TODO hooks.
-#
-# To run:
-#   pip install streamlit numpy pandas matplotlib reportlab simplekml shapely
-#   streamlit run landfill_streamlit_app.py
+# streamlit_foundation_app.py
+# --- Streamlit App: RCC Foundation Designer (Biaxial Moments, Shear in 2 dirs, No‑Tension Soil, Pedestal, Optional Raft) ---
+# Author: ChatGPT (GPT‑5 Thinking)
+# Change log:
+# - Enforced uniform float types for all st.number_input arguments to fix StreamlitMixedNumericTypesError
+# - Added helper num_input_float()
+# - Made defaults explicitly float
+# - Minor cleanups in units and comments
 
 import io
 import math
 import json
-import datetime as dt
-from dataclasses import dataclass, asdict
-from typing import List, Tuple, Optional
+import zipfile
+from dataclasses import dataclass
+from typing import Tuple, Dict, List
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import streamlit as st
+import matplotlib.pyplot as plt
 
-# Optional imports
-try:
-    from shapely.geometry import Polygon, Point
-    from shapely.affinity import translate
-except Exception:
-    Polygon = None
-    Point = None
-try:
-    import simplekml
-except Exception:
-    simplekml = None
+# ------------------------------ Utility & Defaults ------------------------------
 
-# ---------------------------
-# Utility & Data Structures
-# ---------------------------
-
-SI = {
-    "length": "m",
-    "area": "m²",
-    "volume": "m³",
-    "thickness": "m",
-    "density": "t/m³",
-    "rate_area": "₹/m²",
-    "rate_vol": "₹/m³",
-    "rate_item": "₹/item",
-}
-
-WASTE_PRESETS = {
-    "MSW": {
-        "gamma_unsat": 9.5,  # kN/m³ (≈ density 0.97 t/m³)
-        "gamma_sat": 12.5,   # kN/m³
-        "phi": 25.0,         # degrees
-        "c": 5.0,            # kPa
-        "liner": {
-            "clay_thk": 0.9,
-            "clay_k": 1e-7,
-            "hdpe_thk": 1.5e-3,
-            "gcl": True,
-            "drain_thk": 0.3,
-        },
+def_header = {
+    "project": {
+        "title": "Pump House Column F3 Foundation",
+        "location": "Hyderabad",
+        "designer": "Your Firm",
+        "reviewer": "Approving Agency"
     },
-    "Hazardous": {
-        "gamma_unsat": 11.0,
-        "gamma_sat": 14.0,
-        "phi": 28.0,
-        "c": 8.0,
-        "liner": {
-            "clay_thk": 1.0,
-            "clay_k": 1e-9,
-            "hdpe_thk": 2.0e-3,
-            "gcl": True,
-            "drain_thk": 0.4,
-        },
+    "materials": {
+        "fck_mpa": 30.0,
+        "fy_mpa": 500.0,
+        "gamma_c": 25.0  # kN/m3
     },
+    "geometry": {
+        "column_bx": 0.4,
+        "column_by": 0.4,
+        "ped_px": 0.6,
+        "ped_py": 0.6,
+        "ped_h": 0.6,
+        "foot_B": 2.2,
+        "foot_L": 2.6,
+        "foot_D": 0.55,
+        "cover": 0.05
+    },
+    "soil": {
+        "SBC_kPa_SLS": 200.0,
+        "phi_bearing_factor_ULS": 0.67,  # ULS bearing reduction factor (user may adjust)
+        "unit_weight": 18.0,
+        "k_subgrade": 30000.0,
+        "mu_base": 0.5,
+        "GWT": 2.0,
+        "allowable_settlement_mm": 25.0
+    }
 }
 
-DEFAULT_RATES = {
-    "Clay (compacted)": 500.0,        # ₹/m³
-    "HDPE liner install": 350.0,      # ₹/m²
-    "GCL": 420.0,                    # ₹/m²
-    "Drainage gravel": 900.0,        # ₹/m³
-    "Geotextile": 120.0,            # ₹/m²
-    "Earthworks (cut/fill)": 180.0,  # ₹/m³
-    "Gas well": 95000.0,            # ₹/item
-    "Monitoring well": 125000.0,     # ₹/item
-    "Topsoil": 300.0,               # ₹/m³
-}
+def default_loads_df():
+    return pd.DataFrame([
+        {"Combo": "ULS1 (DL+LL)", "Type": "ULS", "P_kN": 1200.0, "Vx_kN": 50.0, "Vy_kN": 40.0, "Mx_kNm": 180.0, "My_kNm": 220.0},
+        {"Combo": "ULS2 (DL+EQx)", "Type": "ULS", "P_kN": 950.0, "Vx_kN": 120.0, "Vy_kN": 30.0, "Mx_kNm": 280.0, "My_kNm": 90.0},
+        {"Combo": "SLS1 (Service)", "Type": "SLS", "P_kN": 900.0, "Vx_kN": 40.0, "Vy_kN": 35.0, "Mx_kNm": 150.0, "My_kNm": 170.0},
+    ])
 
-@dataclass
-class SiteInputs:
-    project_name: str
-    agency_template: str  # "CPCB" | "EPA"
-    latitude: float
-    longitude: float
-    avg_ground_rl: float
-    water_table_depth: float
-    waste_type: str
-    inflow_tpd: float
-    waste_density_tpm3: float
-    compaction_factor: float
-    lifespan_years_target: Optional[float]
+# ------------------------------ Streamlit helpers ------------------------------
 
-@dataclass
-class GeometryInputs:
-    inside_slope_h: float
-    inside_slope_v: float
-    outside_slope_h: float
-    outside_slope_v: float
-    berm_width: float
-    berm_height: float
-    lift_thickness: float
-    final_height_above_gl: float
-    depth_below_gl: float
+def num_input_float(label, minv, maxv, val, step, **kwargs):
+    return st.number_input(
+        label,
+        min_value=float(minv),
+        max_value=float(maxv),
+        value=float(val),
+        step=float(step),
+        **kwargs,
+    )
 
-@dataclass
-class StabilityInputs:
-    gamma_unsat: float
-    gamma_sat: float
-    phi: float
-    cohesion: float
-    soil_phi: float
-    soil_c: float
-    soil_gamma: float
-    groundwater_rl: Optional[float]
-    ks: float  # seismic coefficient (horizontal)
-    target_fos_static: float
-    target_fos_seismic: float
+# ------------------------------ Soil Pressure Engine ------------------------------
 
-# ---------------------------
-# Geometry helpers
-# ---------------------------
-
-def rectangle_polygon(width: float, length: float) -> List[Tuple[float, float]]:
-    return [(0, 0), (width, 0), (width, length), (0, length)]
-
-
-def polygon_area(coords: List[Tuple[float, float]]) -> float:
-    x = np.array([p[0] for p in coords])
-    y = np.array([p[1] for p in coords])
-    return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
-
-
-def generate_section(geom: GeometryInputs, footprint_area: float) -> dict:
-    """Compute volumes via simple prismatic approach and build cross-section coordinates.
-    - Inside slope forms the internal fill profile.
-    - Berms create benches outward; outside slope gives outer embankment.
-    Returns dict with section polylines and volumes.
+def linear_pressure_full_contact(P: float, Mx: float, My: float, B: float, L: float,
+                                 nx: int = 61, ny: int = 61):
+    """Return grid (X,Y), linear q over full rectangle (can be negative if outside kern).
+    Coordinates x in [-B/2, B/2], y in [-L/2, L/2]. q in kPa if P in kN and dimensions in m.
+    q(x,y) = P/A + 12*P*e_x*x/B^2/A + 12*P*e_y*y/L^2/A with e_x = M_y/P, e_y = M_x/P
+    Note: Mx is about x‑axis => gradient along y; My is about y‑axis => along x.
     """
-    # Cross-section model in 2D (x horizontal, z vertical). Assume unit width; scale by plan length later.
-    # We'll approximate volume = section_area * (footprint_area / section_base_width).
-    # For MVP, assume section base width W0 derived from footprint as sqrt(area).
-    W0 = max(1.0, math.sqrt(footprint_area))
+    A = B * L
+    ex = My / P if P != 0 else 0.0
+    ey = Mx / P if P != 0 else 0.0
+    x = np.linspace(-B/2, B/2, nx)
+    y = np.linspace(-L/2, L/2, ny)
+    X, Y = np.meshgrid(x, y)
+    q0 = P / A  # kN/m^2 = kPa
+    q = q0 * (1 + 12 * ex * X / (B**2) + 12 * ey * Y / (L**2))
+    return X, Y, q, ex, ey
 
-    H_final = geom.final_height_above_gl
-    H_below = geom.depth_below_gl
-    h_berm = geom.berm_height
-    w_berm = geom.berm_width
 
-    # Number of berm tiers up to H_final
-    n_tiers = int(max(0, math.floor(H_final / max(h_berm, 1e-6))))
-    lift_n = max(1, int(H_final / max(geom.lift_thickness, 0.5)))
+def no_tension_correction(P: float, Mx: float, My: float, B: float, L: float,
+                          max_iter: int = 200, tol: float = 1e-3,
+                          nx: int = 61, ny: int = 61):
+    """Iteratively enforce q>=0 while matching target P, Mx, My via affine field q=a+bx+cy.
+    Returns (X,Y,q,q_contact_mask,ex,ey,stats)
+    """
+    X, Y, q_init, ex, ey = linear_pressure_full_contact(P, Mx, My, B, L, nx, ny)
+    dA = (B/(nx-1)) * (L/(ny-1))
 
-    # Inside slope horizontal per vertical
-    m_in = geom.inside_slope_h / max(geom.inside_slope_v, 1e-6)
-    m_out = geom.outside_slope_h / max(geom.outside_slope_v, 1e-6)
+    # Initial affine fit by regression to the full‑contact field
+    A_mat = np.vstack([np.ones_like(X).ravel(), X.ravel(), Y.ravel()]).T
+    coeffs, *_ = np.linalg.lstsq(A_mat, q_init.ravel(), rcond=None)
+    a, b, c = coeffs.tolist()
 
-    # Build internal face from base (-H_below) up to +H_final
-    z = [ -H_below, 0.0, H_final ]
-    x_in = [ 0.0, 0.0, m_in * H_final ]  # reference at x=0 on centerline
+    lr = 0.2
+    stats = {"iters": 0, "residual_P": None, "residual_Mx": None, "residual_My": None}
 
-    # Outer face starts at berm offsets
-    x_out = [ W0/2 + m_out*H_below, W0/2, W0/2 + m_out*H_final ]
-    z_out = [ -H_below, 0.0, H_final ]
+    for it in range(max_iter):
+        q_field = a + b * X + c * Y
+        q_pos = np.clip(q_field, 0.0, None)
+        mask = q_pos > 0
 
-    # Add benches: shift outward by berm width at each tier level
-    bench_levels = [i * h_berm for i in range(1, n_tiers + 1)]
-    x_benches = []
-    for lvl in bench_levels:
-        x_b = m_in * lvl + (w_berm * bench_levels.index(lvl) + w_berm)
-        x_benches.append((x_b, lvl))
+        # Integrals over positive region
+        P_num = q_pos.sum() * dA
+        Mx_num = (q_pos * Y).sum() * dA
+        My_num = (q_pos * X).sum() * dA
 
-    # Section areas (very simplified trapezoids)
-    # Inner area above GL
-    A_inner = 0.5 * H_final * (0 + m_in * H_final)
-    # Below ground "cut" pyramid (optional excavation)
-    A_below = 0.5 * H_below * (m_out*H_below)
+        rP = P - P_num
+        rMx = Mx - Mx_num
+        rMy = My - My_num
 
-    # Outer embankment area above GL (assume berm expansion captured by outside slope)
-    A_outer = 0.5 * H_final * (m_out * H_final)
+        stats.update({"iters": it+1, "residual_P": float(rP), "residual_Mx": float(rMx), "residual_My": float(rMy)})
 
-    # Effective section area for waste (above GL)
-    A_waste = A_inner  # idealized; benches ignored for first-order capacity
-    section_base = W0
-    # Volume ≈ A * (footprint_area / section_base)
-    plan_length_equivalent = footprint_area / max(section_base, 1e-6)
-    V_waste = A_waste * plan_length_equivalent
+        if abs(rP) < tol and abs(rMx) < tol and abs(rMy) < tol:
+            return X, Y, q_pos, mask, ex, ey, stats
 
-    # Liner areas
-    base_area = footprint_area
-    side_area = (math.hypot(m_in, 1.0) * H_final) * (2 * plan_length_equivalent)  # two long sides equivalent
+        # Gradients
+        Xm = X[mask]; Ym = Y[mask]
+        ones = np.ones_like(Xm)
+        dP = np.array([ones.sum(), Xm.sum(), Ym.sum()]) * dA
+        dMx = np.array([Ym.sum(), (Xm*Ym).sum(), (Ym*Ym).sum()]) * dA
+        dMy = np.array([Xm.sum(), (Xm*Xm).sum(), (Xm*Ym).sum()]) * dA
+        J = np.vstack([dP, dMx, dMy])
+        r = np.array([rP, rMx, rMy])
+        try:
+            delta = lr * np.linalg.lstsq(J, r, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            break
+        a += float(delta[0]); b += float(delta[1]); c += float(delta[2])
+
+    # Fallback: scale to match P only
+    q_field = a + b * X + c * Y
+    q_pos = np.clip(q_field, 0.0, None)
+    P_num = q_pos.sum() * dA
+    scale = P / P_num if P_num > 0 else 1.0
+    return X, Y, q_pos * scale, (q_pos>0), ex, ey, stats
+
+# ------------------------------ Structural Checks ------------------------------
+
+@dataclass
+class Geometry:
+    B: float
+    L: float
+    D: float
+    cover: float
+    bx: float
+    by: float
+    ped_px: float
+    ped_py: float
+    ped_h: float
+
+
+@dataclass
+class Materials:
+    fck: float
+    fy: float
+    gamma_c: float
+
+
+def effective_depth(D: float, cover: float, bar_diam: float = 16e-3) -> float:
+    return max(D - cover - bar_diam/2.0, 0.05)  # m
+
+
+def bearing_check(q: np.ndarray, SBC_SLS_kPa: float, phi_ULS: float, combo_type: str) -> Dict:
+    qmax = float(np.max(q))
+    qmin = float(np.min(q))
+    limit = SBC_SLS_kPa if combo_type.upper()=="SLS" else SBC_SLS_kPa * phi_ULS
+    ok = (qmax <= limit) and (qmin >= -1e-6)
+    return {"qmax_kPa": qmax, "qmin_kPa": qmin, "limit_kPa": float(limit), "OK": ok}
+
+
+def sliding_check(P_vert_kN: float, Vx_kN: float, Vy_kN: float, mu: float) -> Dict:
+    R = mu * max(P_vert_kN, 0.0)
+    V = math.hypot(Vx_kN, Vy_kN)
+    ok = R >= V
+    return {"Resisting_kN": float(R), "Demand_kN": float(V), "OK": ok}
+
+
+def overturning_check(P: float, Mx: float, My: float, B: float, L: float) -> Dict:
+    ex = abs(My / P) if P!=0 else 0.0
+    ey = abs(Mx / P) if P!=0 else 0.0
+    kern_x = B/6.0
+    kern_y = L/6.0
+    ok = (ex <= kern_x) and (ey <= kern_y)
+    return {"ex": float(ex), "ey": float(ey), "kern_x": float(kern_x), "kern_y": float(kern_y), "OK": ok}
+
+
+def one_way_shear_check(q: np.ndarray, X: np.ndarray, Y: np.ndarray, geom: Geometry, mat: Materials) -> Dict:
+    d = effective_depth(geom.D, geom.cover)
+    dA = (geom.B/(X.shape[1]-1)) * (geom.L/(X.shape[0]-1))
+
+    # X-direction (section parallel to Y) at x = bx/2 + d
+    x_crit = geom.bx/2.0 + d
+    Vx_pos = (q[:, X[0]>=x_crit].sum()) * dA
+    Vx_neg = (q[:, X[0]<=-x_crit].sum()) * dA
+    Vx_demand = max(Vx_pos, Vx_neg)
+    b_x = geom.L
+    tau_vx_MPa = (Vx_demand*1e3) / (b_x * d) / 1000.0  # kN -> kPa -> MPa
+
+    # Y-direction (section parallel to X) at y = by/2 + d
+    y_crit = geom.by/2.0 + d
+    Vy_pos = (q[Y[:,0]>=y_crit, :].sum()) * dA
+    Vy_neg = (q[Y[:,0]<=-y_crit, :].sum()) * dA
+    Vy_demand = max(Vy_pos, Vy_neg)
+    b_y = geom.B
+    tau_vy_MPa = (Vy_demand*1e3) / (b_y * d) / 1000.0
+
+    tau_c = 0.62 * math.sqrt(mat.fck) / 1.5  # MPa (approx)
 
     return {
-        "A_inner": A_inner,
-        "A_outer": A_outer,
-        "A_below": A_below,
-        "A_waste": A_waste,
-        "V_waste": V_waste,
-        "base_area": base_area,
-        "side_area": side_area,
-        "section_base": section_base,
-        "x_in": x_in,
-        "z_in": z,
-        "x_out": x_out,
-        "z_out": z_out,
-        "benches": x_benches,
-        "plan_length_equiv": plan_length_equivalent,
-        "n_tiers": n_tiers,
-        "lift_n": lift_n,
+        "one_way": {
+            "X": {"V_kN": float(Vx_demand), "tau_v_MPa": float(tau_vx_MPa), "tau_c_MPa": float(tau_c), "OK": tau_vx_MPa <= tau_c},
+            "Y": {"V_kN": float(Vy_demand), "tau_v_MPa": float(tau_vy_MPa), "tau_c_MPa": float(tau_c), "OK": tau_vy_MPa <= tau_c},
+        }
     }
 
-# ---------------------------
-# Stability (Bishop simplified)
-# ---------------------------
 
-def bishop_simplified(section, stab: StabilityInputs, n_slices: int = 72,
-                      center_x: float = 0.0, center_z: float = -10.0,
-                      radius: float = 50.0) -> Tuple[float, pd.DataFrame]:
-    """Compute FoS for a trial circular slip surface using Bishop's simplified method.
-    This MVP treats the inner face as the slope; the slip circle intersects ground surface.
-    Returns FoS and slice table.
+def punching_shear_check(q: np.ndarray, X: np.ndarray, Y: np.ndarray, geom: Geometry, mat: Materials) -> Dict:
+    d = effective_depth(geom.D, geom.cover)
+    # Critical perimeter at d/2 from pedestal face (simplified rectangular)
+    perim_x = geom.ped_px + d
+    perim_y = geom.ped_py + d
+    u = 2.0 * (perim_x + perim_y)
+
+    dA = (geom.B/(X.shape[1]-1)) * (geom.L/(X.shape[0]-1))
+    inside = (np.abs(X) <= perim_x/2.0) & (np.abs(Y) <= perim_y/2.0)
+    R_inside = q[inside].sum() * dA  # kN
+
+    V_u = (q.sum()*dA) - R_inside  # kN
+    v_u_MPa = (V_u*1e3) / (u * d) / 1000.0
+    v_c_MPa = 0.25 * math.sqrt(mat.fck) / 1.5
+    ok = v_u_MPa <= v_c_MPa
+
+    return {"u_m": float(u), "V_u_kN": float(V_u), "v_u_MPa": float(v_u_MPa), "v_c_MPa": float(v_c_MPa), "OK": ok}
+
+
+def strip_moments(q: np.ndarray, X: np.ndarray, Y: np.ndarray, geom: Geometry) -> Dict:
+    """Estimate strip design moments at pedestal faces by resultant on each wing * lever arm.
+    Returns kNm for X (about X-axis from top/bottom wings) and Y (about Y-axis from left/right wings).
     """
-    phi = math.radians(stab.phi)
-    c = stab.cohesion  # kPa -> kN/m²
-    gamma = stab.gamma_unsat  # kN/m³
-    ks = stab.ks
+    dA = (geom.B/(X.shape[1]-1)) * (geom.L/(X.shape[0]-1))
+    x_face = geom.ped_px/2.0
+    y_face = geom.ped_py/2.0
 
-    # Define surface profile along x; use inner face line from section (x_in, z)
-    x_top = np.linspace(0, section["x_in"][-1], n_slices + 1)
-    z_top = (section["z_in"][0] + (section["z_in"][-1] - section["z_in"][0]) * (x_top / max(section["x_in"][-1], 1e-6)))
+    # Right/Left wings (about Y-axis)
+    right = X[0] >= x_face
+    left  = X[0] <= -x_face
 
-    # Circle geometry
-    def circle_z(x):
-        return center_z + math.sqrt(max(radius**2 - (x - center_x)**2, 0.0))
+    q_right = q[:, right]; Xr = X[:, right]
+    Ar = q_right.sum() * dA
+    xcg_r = (q_right * Xr).sum() * dA / Ar if Ar>1e-9 else x_face
+    Mr = Ar * max(xcg_r - x_face, 0.0)
 
-    # Slice loop
-    widths = np.diff(x_top)
-    x_mid = (x_top[:-1] + x_top[1:]) / 2
-    z_surface = (z_top[:-1] + z_top[1:]) / 2
-    z_base = np.array([circle_z(x) for x in x_mid])
-    h = np.maximum(z_surface - z_base, 1e-3)
+    q_left = q[:, left]; Xl = X[:, left]
+    Al = q_left.sum() * dA
+    xcg_l = (q_left * (-Xl)).sum() * dA / Al if Al>1e-9 else x_face
+    Ml = Al * max(xcg_l - x_face, 0.0)
 
-    # Normal and shear mobilization
-    alpha = np.arctan2((x_mid - center_x), (z_surface - center_z))  # slope of base wrt horizontal (approx)
-    W = gamma * h * widths * 1.0  # unit out-of-plane thickness
+    My_design = max(Mr, Ml)  # kNm
 
-    # Pore pressure simple model: if groundwater rl given, assume hydrostatic height above base
-    u = 0.0
-    if stab.groundwater_rl is not None:
-        gw = stab.groundwater_rl
-        head = np.maximum(gw - z_base, 0.0)
-        u = 9.81 * head  # kPa ≈ kN/m²
-    N = W * np.cos(alpha)
-    N_eff = N - u * widths
+    # Top/Bottom wings (about X-axis)
+    top   = Y[:,0] >= y_face
+    bottom= Y[:,0] <= -y_face
 
-    # Iterative Bishop FoS
-    FoS = 1.3
-    for _ in range(50):
-        num = np.sum(c * widths + (N_eff / FoS) * np.tan(phi))
-        den = np.sum(W * np.sin(alpha) + ks * W)
-        new_FoS = num / max(den, 1e-6)
-        if abs(new_FoS - FoS) < 1e-4:
-            FoS = new_FoS
-            break
-        FoS = new_FoS
+    q_top = q[top, :]; Yt = Y[top, :]
+    At = q_top.sum() * dA
+    ycg_t = (q_top * Yt).sum() * dA / At if At>1e-9 else y_face
+    Mt = At * max(ycg_t - y_face, 0.0)
 
-    df = pd.DataFrame({
-        "x_mid": x_mid,
-        "z_surf": z_surface,
-        "z_base": z_base,
-        "width": widths,
-        "W": W,
-        "alpha_rad": alpha,
-        "N_eff": N_eff,
-    })
-    return FoS, df
+    q_bot = q[bottom, :]; Yb = Y[bottom, :]
+    Ab = q_bot.sum() * dA
+    ycg_b = (q_bot * (-Yb)).sum() * dA / Ab if Ab>1e-9 else y_face
+    Mb = Ab * max(ycg_b - y_face, 0.0)
+
+    Mx_design = max(Mt, Mb)
+
+    return {"Mx_kNm": float(Mx_design), "My_kNm": float(My_design)}
 
 
-def grid_search_bishop(section, stab: StabilityInputs, n_slices=72) -> Tuple[float, dict, pd.DataFrame]:
-    """Crude grid search for critical circle: vary center and radius around slope toe."""
-    x_max = section["x_in"][-1]
-    best = {"FoS": 9e9}
-    best_df = None
-    # Search grid
-    for cx in np.linspace(-x_max, x_max*2, 12):
-        for cz in np.linspace(-section["z_in"][0]-section["z_in"][-1], -1.0, 10):
-            for r in np.linspace(x_max*0.8, x_max*3.0, 12):
-                FoS, df = bishop_simplified(section, stab, n_slices, cx, cz, r)
-                if FoS < best["FoS"]:
-                    best = {"FoS": FoS, "cx": cx, "cz": cz, "r": r}
-                    best_df = df
-    return best["FoS"], best, best_df
-
-# ---------------------------
-# BOQ & Costing
-# ---------------------------
-
-def compute_boq(section: dict, liner: dict, rates: dict, footprint_area: float,
-                 plan_length_equiv: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    items = []
-    # Liner materials
-    clay_vol = liner["clay_thk"] * footprint_area
-    hdpe_area = section["base_area"] + section["side_area"]
-    gcl_area = hdpe_area if liner.get("gcl", False) else 0.0
-    drain_vol = liner["drain_thk"] * footprint_area
-    # Earthworks
-    cut_fill = section["A_below"] * plan_length_equiv
-    # Topsoil (assume 0.3 m over final cap area ~ base area)
-    topsoil_vol = 0.3 * section["base_area"]
-
-    items.append(["Clay (compacted)", clay_vol, "m³", rates.get("Clay (compacted)", 0.0)])
-    items.append(["HDPE liner install", hdpe_area, "m²", rates.get("HDPE liner install", 0.0)])
-    items.append(["GCL", gcl_area, "m²", rates.get("GCL", 0.0)])
-    items.append(["Drainage gravel", drain_vol, "m³", rates.get("Drainage gravel", 0.0)])
-    items.append(["Geotextile", hdpe_area, "m²", rates.get("Geotextile", 0.0)])
-    items.append(["Earthworks (cut/fill)", cut_fill, "m³", rates.get("Earthworks (cut/fill)", 0.0)])
-    items.append(["Topsoil", topsoil_vol, "m³", rates.get("Topsoil", 0.0)])
-
-    # Monitoring networks (rule-of-thumb spacing)
-    site_length = math.sqrt(max(footprint_area, 1e-6))
-    gas_spacing = 40.0
-    mon_spacing = 100.0
-    gas_wells = max(1, int((site_length / gas_spacing) ** 2))
-    mon_wells = max(1, int((site_length / mon_spacing) ** 2))
-
-    items.append(["Gas well", gas_wells, "item", rates.get("Gas well", 0.0)])
-    items.append(["Monitoring well", mon_wells, "item", rates.get("Monitoring well", 0.0)])
-
-    df = pd.DataFrame(items, columns=["Item", "Quantity", "Unit", "Rate (₹)"])
-    df["Amount (₹)"] = df["Quantity"] * df["Rate (₹)"]
-
-    summary = pd.DataFrame({
-        "Metric": ["Total capital cost", "Waste capacity (m³)", "Cost per m³ (₹/m³)"],
-        "Value": [df["Amount (₹)"].sum(), section["V_waste"],
-                  df["Amount (₹)"].sum() / max(section["V_waste"], 1e-6)],
-    })
-
-    return df, summary
-
-# ---------------------------
-# Exports
-# ---------------------------
-
-def export_excel(inputs: dict, section: dict, boq: pd.DataFrame, summary: pd.DataFrame) -> bytes:
-    with pd.ExcelWriter(io.BytesIO(), engine="xlsxwriter") as writer:
-        pd.DataFrame({k: [v] for k, v in inputs.items()}).to_excel(writer, sheet_name="Inputs", index=False)
-        pd.DataFrame(section, index=[0]).to_excel(writer, sheet_name="Section", index=False)
-        boq.to_excel(writer, sheet_name="BOQ", index=False)
-        summary.to_excel(writer, sheet_name="Summary", index=False)
-        writer.save()
-        return writer.book.filename.getvalue()
+def flexure_steel(M_kNm: float, geom: Geometry, mat: Materials, strip_width: float) -> Dict:
+    """Very simplified per‑meter strip steel; for detailed design, use IS 456 sec. 38 & SP‑16.
+    """
+    d = effective_depth(geom.D, geom.cover)
+    Mu_Nm = M_kNm * 1000.0
+    fy = mat.fy * 1e6  # MPa -> N/m^2
+    z = 0.9 * d
+    As_m2 = Mu_Nm / (0.87 * fy * z) if z>0 else 0.0
+    As_mm2_per_m = As_m2 * 1e6 / max(strip_width,1e-6)
+    return {"d_m": float(d), "As_m2": float(As_m2), "As_mm2_per_m": float(As_mm2_per_m)}
 
 
-def export_kml(coords: List[Tuple[float, float]]) -> Optional[bytes]:
-    if simplekml is None:
-        return None
-    kml = simplekml.Kml()
-    ls = kml.newlinestring(name="Landfill Footprint", coords=[(x, y) for x, y in coords])
-    ls.extrude = 0
-    ls.altitudemode = simplekml.AltitudeMode.clamptoground
-    return kml.kml().encode("utf-8")
+def pedestal_bearing_check(geom: Geometry, mat: Materials) -> Dict:
+    # IS 456 bearing stress enhancement (simplified)
+    A1 = geom.bx * geom.by
+    A2 = geom.ped_px * geom.ped_py
+    inc = math.sqrt(max(A2/A1, 1.0)) if A1>0 else 1.0
+    sigma_allow = min(0.45 * mat.fck * inc, 0.9 * mat.fck)
+    return {"sigma_allow_MPa": float(sigma_allow), "A1_m2": float(A1), "A2_m2": float(A2)}
 
-# ---------------------------
-# Visualization helpers
-# ---------------------------
+# ------------------------------ Streamlit UI ------------------------------
 
-def plot_cross_section(section: dict, title: str = "Cross-Section") -> bytes:
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(section["x_in"], section["z_in"], label="Inside slope")
-    ax.plot(section["x_out"], section["z_out"], label="Outside slope")
-    if section["benches"]:
-        bx, bz = zip(*section["benches"]) if section["benches"] else ([], [])
-        ax.scatter(bx, bz, s=12, label="Berm benches")
-    ax.axhline(0, color="k", linewidth=0.8)
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("z (m)")
-    ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    return buf.getvalue()
+st.set_page_config(page_title="RCC Foundation Designer (Biaxial)", layout="wide")
+st.title("RCC Foundation Designer — Biaxial Moments, No‑Tension Soil, Shear & Punching, Pedestal")
+st.caption("Design aid per IS 456/IS 2950 guidance. Verify with a licensed engineer.")
 
+with st.sidebar:
+    st.header("Project & Materials")
+    proj = def_header["project"]
+    materials = def_header["materials"]
+    geometry = def_header["geometry"]
+    soil = def_header["soil"]
 
-def plot_slip(best_params: dict, df_slices: pd.DataFrame, section: dict) -> bytes:
-    fig, ax = plt.subplots(figsize=(7, 4))
-    # Section
-    ax.plot(section["x_in"], section["z_in"], label="Inside slope")
-    ax.axhline(0, color="k", linewidth=0.8)
-    # Slip circle
-    cx, cz, r = best_params["cx"], best_params["cz"], best_params["r"]
-    th = np.linspace(0, 2*np.pi, 400)
-    ax.plot(cx + r*np.cos(th), cz + r*np.sin(th), linestyle="--", label="Critical slip")
-    ax.scatter(df_slices["x_mid"], df_slices["z_surf"], s=6, label="Slice midpoints")
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("z (m)")
-    ax.set_title("Critical Slip Surface (Bishop)")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    return buf.getvalue()
+    with st.expander("Project"):
+        title = st.text_input("Title", str(proj["title"]))
+        location = st.text_input("Location", str(proj["location"]))
+        designer = st.text_input("Designer", str(proj["designer"]))
+        reviewer = st.text_input("Reviewer", str(proj["reviewer"]))
 
-# ---------------------------
-# Streamlit App
-# ---------------------------
+    with st.expander("Materials"):
+        fck = num_input_float("Concrete fck (MPa)", 20.0, 80.0, materials["fck_mpa"], 5.0)
+        fy = num_input_float("Steel fy (MPa)", 415.0, 600.0, materials["fy_mpa"], 5.0)
+        gamma_c = num_input_float("Concrete unit weight (kN/m³)", 20.0, 27.0, materials["gamma_c"], 0.5)
 
-st.set_page_config(page_title="Landfill Design App", layout="wide")
+    with st.expander("Soil & Bearing"):
+        SBC = num_input_float("SBC @ SLS (kPa)", 50.0, 600.0, soil["SBC_kPa_SLS"], 10.0)
+        phi_ULS = num_input_float("ULS bearing factor (φ)", 0.4, 1.0, soil["phi_bearing_factor_ULS"], 0.01)
+        k_sub = num_input_float("Subgrade modulus k (kN/m³)", 1000.0, 100000.0, soil["k_subgrade"], 100.0)
+        mu = num_input_float("Base friction μ", 0.2, 0.8, soil["mu_base"], 0.05)
+        GWT = num_input_float("GWT depth below base (m)", 0.0, 20.0, soil["GWT"], 0.1)
 
-st.title("Landfill Design, Stability, Visualization & Submission App")
+    with st.expander("Geometry"):
+        bx = num_input_float("Column size bx (m)", 0.2, 2.0, geometry["column_bx"], 0.05)
+        by = num_input_float("Column size by (m)", 0.2, 2.0, geometry["column_by"], 0.05)
+        ped_px = num_input_float("Pedestal px (m)", bx, 4.0, geometry["ped_px"], 0.05)
+        ped_py = num_input_float("Pedestal py (m)", by, 4.0, geometry["ped_py"], 0.05)
+        ped_h = num_input_float("Pedestal height (m)", 0.3, 2.0, geometry["ped_h"], 0.05)
+        B = num_input_float("Footing B (m) — x‑dir size", float(ped_px+0.2), 20.0, geometry["foot_B"], 0.1)
+        L = num_input_float("Footing L (m) — y‑dir size", float(ped_py+0.2), 20.0, geometry["foot_L"], 0.1)
+        D = num_input_float("Footing overall thickness D (m)", 0.3, 2.0, geometry["foot_D"], 0.05)
+        cover = num_input_float("Concrete cover (m)", 0.04, 0.1, geometry["cover"], 0.005)
 
-with st.expander("About this app", expanded=False):
+    mat = Materials(fck=fck, fy=fy, gamma_c=gamma_c)
+    geom = Geometry(B=B, L=L, D=D, cover=cover, bx=bx, by=by, ped_px=ped_px, ped_py=ped_py, ped_h=ped_h)
+
+st.subheader("Load Combinations")
+loads_df = st.data_editor(default_loads_df(), num_rows="dynamic", use_container_width=True)
+
+st.markdown("---")
+run = st.button("▶️ Run Design & Generate Plots")
+
+results_rows: List[Dict] = []
+plots_png: Dict[str, bytes] = {}
+report_text: List[str] = []
+
+if run:
+    st.success("Running analysis…")
+
+    for i, row in loads_df.iterrows():
+        combo = str(row.get("Combo", f"Combo_{i+1}"))
+        ctype = str(row.get("Type", "ULS")).upper()
+        P = float(row.get("P_kN", 0.0))
+        Vx = float(row.get("Vx_kN", 0.0))
+        Vy = float(row.get("Vy_kN", 0.0))
+        Mx = float(row.get("Mx_kNm", 0.0))
+        My = float(row.get("My_kNm", 0.0))
+
+        col1, col2 = st.columns([1,1])
+        with col1:
+            st.markdown(f"### {combo} ({ctype})")
+            st.write(f"P={P:.1f} kN, Vx={Vx:.1f} kN, Vy={Vy:.1f} kN, Mx={Mx:.1f} kNm, My={My:.1f} kNm")
+
+        # Pressure field with no‑tension correction
+        X, Y, q, mask, ex, ey, stats = no_tension_correction(P, Mx, My, geom.B, geom.L, nx=101, ny=101)
+        qmax = float(np.max(q)); qmin = float(np.min(q))
+        bearing = bearing_check(q, SBC, phi_ULS, ctype)
+        slide = sliding_check(P, Vx, Vy, mu)
+        ot = overturning_check(P, Mx, My, geom.B, geom.L)
+        shear = one_way_shear_check(q, X, Y, geom, mat)
+        punch = punching_shear_check(q, X, Y, geom, mat)
+        stripM = strip_moments(q, X, Y, geom)
+
+        # Flexure steel (very simplified per‑meter strip)
+        steel_x = flexure_steel(stripM["Mx_kNm"], geom, mat, strip_width=1.0)
+        steel_y = flexure_steel(stripM["My_kNm"], geom, mat, strip_width=1.0)
+
+        # -------- Plots --------
+        with col1:
+            fig1, ax1 = plt.subplots()
+            im = ax1.imshow(q, extent=[-geom.B/2.0, geom.B/2.0, -geom.L/2.0, geom.L/2.0], origin='lower')
+            ax1.set_xlabel('x (m)')
+            ax1.set_ylabel('y (m)')
+            ax1.set_title(f"Soil Pressure Heatmap — {combo}")
+            plt.colorbar(im, ax=ax1, label='q (kPa)')
+            # Draw pedestal
+            rx = geom.ped_px/2.0; ry = geom.ped_py/2.0
+            ax1.plot([ -rx,  rx,  rx, -rx, -rx], [ -ry, -ry,  ry,  ry, -ry])
+            st.pyplot(fig1, use_container_width=True)
+            buf1 = io.BytesIO(); fig1.savefig(buf1, format='png', dpi=200); buf1.seek(0)
+            plots_png[f"{combo}_pressure.png"] = buf1.getvalue()
+            plt.close(fig1)
+
+        with col2:
+            fig2, ax2 = plt.subplots()
+            dirs = ['Mx (about X)', 'My (about Y)']
+            vals = [stripM["Mx_kNm"], stripM["My_kNm"]]
+            ax2.bar(dirs, vals)
+            ax2.set_ylabel('Design strip moment (kNm)')
+            ax2.set_title(f'Strip Moments — {combo}')
+            st.pyplot(fig2, use_container_width=True)
+            buf2 = io.BytesIO(); fig2.savefig(buf2, format='png', dpi=200); buf2.seek(0)
+            plots_png[f"{combo}_moments.png"] = buf2.getvalue()
+            plt.close(fig2)
+
+        fig3, ax3 = plt.subplots()
+        ax3.set_title(f"Punching Perimeter @ d/2 — {combo}")
+        ax3.set_xlabel('x (m)'); ax3.set_ylabel('y (m)')
+        ax3.set_aspect('equal','box')
+        # Footing outline
+        ax3.plot([-geom.B/2.0, geom.B/2.0, geom.B/2.0, -geom.B/2.0, -geom.B/2.0],
+                 [-geom.L/2.0, -geom.L/2.0, geom.L/2.0, geom.L/2.0, -geom.L/2.0])
+        # Pedestal
+        ax3.plot([-geom.ped_px/2.0, geom.ped_px/2.0, geom.ped_px/2.0, -geom.ped_px/2.0, -geom.ped_px/2.0],
+                 [-geom.ped_py/2.0, -geom.ped_py/2.0, geom.ped_py/2.0, geom.ped_py/2.0, -geom.ped_py/2.0])
+        d_eff = effective_depth(geom.D, geom.cover)
+        perim_x = geom.ped_px + d_eff
+        perim_y = geom.ped_py + d_eff
+        ax3.plot([-perim_x/2.0, perim_x/2.0, perim_x/2.0, -perim_x/2.0, -perim_x/2.0],
+                 [-perim_y/2.0, -perim_y/2.0, perim_y/2.0, perim_y/2.0, -perim_y/2.0])
+        st.pyplot(fig3, use_container_width=True)
+        buf3 = io.BytesIO(); fig3.savefig(buf3, format='png', dpi=200); buf3.seek(0)
+        plots_png[f"{combo}_punching.png"] = buf3.getvalue()
+        plt.close(fig3)
+
+        # Row summary
+        row_summary = {
+            "Combo": combo, "Type": ctype,
+            "qmax_kPa": bearing["qmax_kPa"], "qmin_kPa": bearing["qmin_kPa"], "Bearing_Limit_kPa": bearing["limit_kPa"], "Bearing_OK": bearing["OK"],
+            "Sliding_R(kN)": slide["Resisting_kN"], "Sliding_V(kN)": slide["Demand_kN"], "Sliding_OK": slide["OK"],
+            "Overturning_OK": ot["OK"],
+            "OneWay_X_OK": shear["one_way"]["X"]["OK"], "OneWay_Y_OK": shear["one_way"]["Y"]["OK"],
+            "Punch_OK": punch["OK"],
+            "Mx_strip_kNm": stripM["Mx_kNm"], "My_strip_kNm": stripM["My_kNm"],
+            "As_x_mm2pm": steel_x["As_mm2_per_m"], "As_y_mm2pm": steel_y["As_mm2_per_m"]
+        }
+        results_rows.append(row_summary)
+
+        # Report snippet
+        report_text.append(
+            f"## {combo} ({ctype})
+"
+            f"P={P:.1f} kN, Vx={Vx:.1f} kN, Vy={Vy:.1f} kN, Mx={Mx:.1f} kNm, My={My:.1f} kNm
+
+"
+            f"- Eccentricities: e_x={My/P if P else 0:.3f} m, e_y={Mx/P if P else 0:.3f} m; No‑tension iters={stats['iters']}, resP={stats['residual_P'] if stats['residual_P'] is not None else 0:.3f} kN
+"
+            f"- Bearing: qmax={bearing['qmax_kPa']:.1f} ≤ {bearing['limit_kPa']:.1f} kPa → {'OK' if bearing['OK'] else 'NG'}
+"
+            f"- Sliding: R={slide['Resisting_kN']:.1f} vs V={slide['Demand_kN']:.1f} → {'OK' if slide['OK'] else 'NG'}
+"
+            f"- One‑way shear X/Y → {('OK' if shear['one_way']['X']['OK'] else 'NG')}/{('OK' if shear['one_way']['Y']['OK'] else 'NG')}
+"
+            f"- Punching: v_u={punch['v_u_MPa']:.3f} ≤ v_c={punch['v_c_MPa']:.3f} MPa → {'OK' if punch['OK'] else 'NG'}
+"
+            f"- Strip moments: Mx={stripM['Mx_kNm']:.1f} kNm, My={stripM['My_kNm']:.1f} kNm; As_x={steel_x['As_mm2_per_m']:.0f} mm²/m, As_y={steel_y['As_mm2_per_m']:.0f} mm²/m
+"
+        )
+
+    # Results table
+    res_df = pd.DataFrame(results_rows)
+    st.subheader("Design Summary — All Combos")
+    st.dataframe(res_df, use_container_width=True)
+
+    # Pedestal check (common)
+    ped_check = pedestal_bearing_check(geom, mat)
+    st.subheader("Pedestal Bearing Check (IS 456 — simplified)")
+    st.json(ped_check)
+
+    # Downloads: CSV + ZIP of plots + JSON/MD report
+    csv_buf = io.StringIO(); res_df.to_csv(csv_buf, index=False); csv_bytes = csv_buf.getvalue().encode()
+
+    md_report = (
+        f"# {title} — {location}
+
+"
+        f"**Designer:** {designer}  \
+**Reviewer:** {reviewer}  \
+**fck:** {mat.fck} MPa, **fy:** {mat.fy} MPa  \
+**Footing:** B×L×D = {geom.B}×{geom.L}×{geom.D} m, Cover={geom.cover} m  \
+**Pedestal:** {geom.ped_px}×{geom.ped_py}×{geom.ped_h} m  \
+**SBC@SLS:** {SBC} kPa (φ_ULS={phi_ULS})
+
+"
+        + "
+
+".join(report_text)
+    )
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('summary.csv', csv_bytes)
+        zf.writestr('report.md', md_report.encode())
+        for name, data in plots_png.items():
+            zf.writestr(name, data)
+    zip_buf.seek(0)
+
+    st.download_button("⬇️ Download package (CSV + plots + report.md)", data=zip_buf, file_name="foundation_design_outputs.zip")
+
+# ------------------------------ Guidance & Next Steps ------------------------------
+
+with st.expander("Method Notes & Advancements Suggestions"):
     st.markdown(
         """
-        This Streamlit app implements a practical landfill design workflow:
-        site setup, geometry & liners, capacity & life, slope stability (Bishop),
-        BOQ & costing, and exportable reports. CPCB/EPA templates are provided as presets.
+**Pressure Solver**  
+This app enforces **no‑tension soil** by iteratively clipping negative pressure and matching the target **P, Mx, My** via a small least‑squares update on an affine pressure field \(q=a+bx+cy\). It produces a realistic **contact polygon** and **heatmap** even for large eccentricities. For critical designs, cross‑check with finite element or closed‑form kern/partial‑contact derivations.
+
+**Advancements to add next:**
+1. **Optimization loop** on B, L, D to minimize concrete/steel while satisfying governing check (`scipy.optimize`).
+2. **Raft (Mat) fallback**: Winkler strips & punching at column nodes.
+3. **Crack width** checks (IS 456 Annex F) based on bar spacing/cover.
+4. **Anchors for uplift/overturning** with ACI 318 anchorage checks.
+5. **DXF export** of rebar plans/sections via `ezdxf`.
+6. **PDF report generator** (ReportLab/WeasyPrint) with clause references.
+7. **Seismic combinations** per IS 1893; load‑comb generator & auto‑factoring.
+8. **Buoyancy** for high GWT; subtract submerged weight and include uplift.
+9. **Excel/CSV import** and **batch design** for multiple supports.
         """
     )
-
-# Wizard tabs
-site_tab, geom_tab, stab_tab, boq_tab, report_tab = st.tabs([
-    "1) Site & Inputs", "2) Geometry", "3) Stability", "4) BOQ & Costing", "5) Reports/Export"
-])
-
-# ---------------------------
-# 1) Site & Inputs
-# ---------------------------
-with site_tab:
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        project_name = st.text_input("Project name", value="Sample Landfill Cell")
-        agency_template = st.selectbox("Template (regs)", ["CPCB", "EPA"], index=0)
-        waste_type = st.radio("Waste type", ["MSW", "Hazardous"], index=0)
-    with col2:
-        latitude = st.number_input("Latitude", value=17.3850, format="%.6f")
-        longitude = st.number_input("Longitude", value=78.4867, format="%.6f")
-        avg_ground_rl = st.number_input("Avg. ground RL (m)", value=100.0)
-    with col3:
-        water_table_depth = st.number_input("Water table depth below GL (m)", value=5.0)
-        inflow_tpd = st.number_input("Waste inflow (TPD)", value=1000.0)
-        waste_density_tpm3 = st.number_input("Waste density (t/m³)", value=0.95)
-        compaction_factor = st.number_input("Compaction factor", value=0.85)
-        lifespan_years_target = st.number_input("Target life (yrs) (0=auto)", value=0.0)
-
-    st.session_state.site = SiteInputs(
-        project_name, agency_template, latitude, longitude, avg_ground_rl,
-        water_table_depth, waste_type, inflow_tpd, waste_density_tpm3,
-        compaction_factor, None if lifespan_years_target <= 0 else lifespan_years_target,
-    )
-
-    st.info("Water table clearance warning shown if < 2 m.")
-    if water_table_depth < 2.0:
-        st.warning("Water table depth < 2 m below GL. Consider raising base or improving liner/drainage.")
-
-    # Footprint definition
-    st.subheader("Footprint Polygon")
-    colA, colB = st.columns(2)
-    with colA:
-        width = st.number_input("Approx. footprint width (m)", value=120.0)
-        length = st.number_input("Approx. footprint length (m)", value=180.0)
-        coords = rectangle_polygon(width, length)
-        footprint_area = polygon_area(coords)
-        st.write(f"Area ≈ **{footprint_area:,.0f} m²**")
-    with colB:
-        up = st.file_uploader("Import polygon (KML/GeoJSON) [optional]", type=["kml", "geojson", "json"])
-        if up is not None:
-            try:
-                if up.name.lower().endswith("kml"):
-                    # Minimal KML parse: look for coordinates tuple
-                    text = up.read().decode("utf-8", errors="ignore")
-                    # naive parse for <coordinates>lon,lat pairs
-                    import re
-                    m = re.search(r"<coordinates>(.*?)</coordinates>", text, re.S)
-                    if m:
-                        raw = m.group(1).strip().split()
-                        coords = [(float(v.split(",")[0]), float(v.split(",")[1])) for v in raw]
-                else:
-                    gj = json.load(up)
-                    # support Polygon or LineString
-                    if gj.get("type") == "FeatureCollection":
-                        geom0 = gj["features"][0]["geometry"]
-                    else:
-                        geom0 = gj
-                    if geom0["type"] == "Polygon":
-                        coords = geom0["coordinates"][0]
-                    elif geom0["type"] == "LineString":
-                        coords = geom0["coordinates"]
-                footprint_area = polygon_area(coords)
-                st.success("Polygon imported.")
-            except Exception as e:
-                st.error(f"Failed to parse polygon: {e}")
-
-    st.session_state.footprint = {
-        "coords": coords,
-        "area": footprint_area,
-    }
-
-# ---------------------------
-# 2) Geometry
-# ---------------------------
-with geom_tab:
-    col1, col2 = st.columns(2)
-    with col1:
-        inside_slope_h = st.number_input("Inside slope H", value=3.0)
-        inside_slope_v = st.number_input("Inside slope V", value=1.0)
-        outside_slope_h = st.number_input("Outside slope H", value=2.5)
-        outside_slope_v = st.number_input("Outside slope V", value=1.0)
-        berm_width = st.number_input("Berm width (m)", value=4.0)
-        berm_height = st.number_input("Berm height (m)", value=5.0)
-    with col2:
-        lift_thickness = st.number_input("Lift thickness (m)", value=2.5)
-        final_height_above_gl = st.number_input("Final height above GL (m)", value=30.0)
-        depth_below_gl = st.number_input("Depth below GL (m)", value=6.0)
-
-    geom = GeometryInputs(
-        inside_slope_h, inside_slope_v, outside_slope_h, outside_slope_v,
-        berm_width, berm_height, lift_thickness, final_height_above_gl,
-        depth_below_gl,
-    )
-
-    section = generate_section(geom, st.session_state.footprint["area"])
-    st.session_state.section = section
-
-    img = plot_cross_section(section)
-    st.image(img, caption="Cross-section (schematic)")
-
-    # Life calculation
-    capacity_tonnes = section["V_waste"] * st.session_state.site.waste_density_tpm3 * st.session_state.site.compaction_factor
-    life_days = capacity_tonnes / max(st.session_state.site.inflow_tpd, 1e-6)
-    life_years = life_days / 365.0
-    st.metric("Estimated life (years)", f"{life_years:,.1f}")
-
-# ---------------------------
-# 3) Stability
-# ---------------------------
-with stab_tab:
-    preset = WASTE_PRESETS[st.session_state.site.waste_type]
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        gamma_unsat = st.number_input("Waste γ (unsat) kN/m³", value=float(preset["gamma_unsat"]))
-        gamma_sat = st.number_input("Waste γ (sat) kN/m³", value=float(preset["gamma_sat"]))
-        phi = st.number_input("Waste φ (deg)", value=float(preset["phi"]))
-        cohesion = st.number_input("Waste cohesion c (kPa)", value=float(preset["c"]))
-    with col2:
-        soil_phi = st.number_input("Berm soil φ (deg)", value=28.0)
-        soil_c = st.number_input("Berm soil c (kPa)", value=5.0)
-        soil_gamma = st.number_input("Berm soil γ (kN/m³)", value=18.0)
-        ks = st.number_input("Seismic coeff. k_h", value=0.0, step=0.02)
-    with col3:
-        groundwater_rl = st.number_input("Groundwater RL (m, abs)", value=st.session_state.site.avg_ground_rl - st.session_state.site.water_table_depth)
-        target_fos_static = st.number_input("Target FoS static", value=1.5)
-        target_fos_seismic = st.number_input("Target FoS seismic", value=1.2)
-        n_slices = st.slider("Slices (Bishop)", min_value=24, max_value=120, value=72, step=8)
-
-    stab = StabilityInputs(
-        gamma_unsat, gamma_sat, phi, cohesion, soil_phi, soil_c, soil_gamma,
-        groundwater_rl, ks, target_fos_static, target_fos_seismic,
-    )
-
-    st.write("**Search for critical slip (Bishop simplified)**")
-    FoS, best_params, df_slices = grid_search_bishop(section, stab, n_slices)
-
-    colA, colB = st.columns([1,1])
-    with colA:
-        st.metric("Critical FoS (static/seismic)", f"{FoS:0.3f}")
-        if FoS < target_fos_static:
-            st.error(f"FoS below target {target_fos_static}")
-        else:
-            st.success("FoS meets target")
-        st.dataframe(df_slices.describe())
-    with colB:
-        slip_img = plot_slip(best_params, df_slices, section)
-        st.image(slip_img, caption="Bishop slip circle")
-
-    # Download slice table
-    csv_buf = df_slices.to_csv(index=False).encode("utf-8")
-    st.download_button("Download Slice Table (CSV)", data=csv_buf, file_name="slice_table.csv", mime="text/csv")
-
-# ---------------------------
-# 4) BOQ & Costing
-# ---------------------------
-with boq_tab:
-    st.subheader("Unit Rates (editable)")
-    rates = {}
-    cols = st.columns(3)
-    for i, (k, v) in enumerate(DEFAULT_RATES.items()):
-        with cols[i % 3]:
-            rates[k] = st.number_input(f"{k} (₹)", value=float(v), min_value=0.0)
-
-    liner = WASTE_PRESETS[st.session_state.site.waste_type]["liner"].copy()
-    st.markdown("**Liner preset (editable)**")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        liner["clay_thk"] = st.number_input("Clay thickness (m)", value=float(liner["clay_thk"]))
-        liner["drain_thk"] = st.number_input("Drainage layer (m)", value=float(liner["drain_thk"]))
-    with c2:
-        liner["hdpe_thk"] = st.number_input("HDPE thickness (m)", value=float(liner["hdpe_thk"]))
-        liner["clay_k"] = st.number_input("Clay k (m/s)", value=float(liner["clay_k"]))
-    with c3:
-        liner["gcl"] = st.checkbox("GCL included", value=bool(liner.get("gcl", True)))
-    with c4:
-        st.write("")
-
-    df_boq, df_summary = compute_boq(section, liner, rates, st.session_state.footprint["area"], section["plan_length_equiv"])
-    st.dataframe(df_boq, use_container_width=True)
-    st.dataframe(df_summary)
-
-# ---------------------------
-# 5) Reports & Export
-# ---------------------------
-with report_tab:
-    st.subheader("Export")
-
-    # Excel
-    input_dump = {
-        **asdict(st.session_state.site),
-        **asdict(geom),
-        **asdict(stab),
-        "footprint_area": st.session_state.footprint["area"],
-        "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
-    }
-    excel_bytes = export_excel(input_dump, section, df_boq, df_summary)
-    st.download_button("Download Excel (Inputs+BOQ)", data=excel_bytes, file_name="landfill_design.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    # KML
-    kml_bytes = export_kml(st.session_state.footprint["coords"]) if simplekml else None
-    if kml_bytes:
-        st.download_button("Download KML (Footprint)", data=kml_bytes, file_name="footprint.kml", mime="application/vnd.google-earth.kml+xml")
-    else:
-        st.caption("Install simplekml for KML export: pip install simplekml")
-
-    # PDF (minimal report via ReportLab)
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.units import cm
-        pdf_buf = io.BytesIO()
-        c = canvas.Canvas(pdf_buf, pagesize=A4)
-        w, h = A4
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(2*cm, h-2*cm, "Landfill Design Report (MVP)")
-        c.setFont("Helvetica", 10)
-        y = h - 3*cm
-        lines = [
-            f"Project: {st.session_state.site.project_name}",
-            f"Template: {st.session_state.site.agency_template} | Waste: {st.session_state.site.waste_type}",
-            f"Footprint area: {st.session_state.footprint['area']:.0f} m² | Estimated life: {((section['V_waste']*st.session_state.site.waste_density_tpm3*st.session_state.site.compaction_factor)/max(st.session_state.site.inflow_tpd,1e-6))/365:.1f} years",
-            f"Bishop critical FoS: {FoS:.3f}",
-            f"Total capital cost (₹): {df_boq['Amount (₹)'].sum():,.0f}",
-        ]
-        for line in lines:
-            c.drawString(2*cm, y, line)
-            y -= 0.6*cm
-        # Embed section plot
-        sec_png = plot_cross_section(section)
-        img = io.BytesIO(sec_png)
-        from reportlab.lib.utils import ImageReader
-        c.drawImage(ImageReader(img), 2*cm, y-8*cm, width=14*cm, height=8*cm, preserveAspectRatio=True)
-        c.showPage()
-        c.save()
-        pdf_bytes = pdf_buf.getvalue()
-        st.download_button("Download PDF Report (MVP)", data=pdf_bytes, file_name="landfill_report.pdf", mime="application/pdf")
-    except Exception as e:
-        st.caption(f"PDF export unavailable: {e}")
-
-    st.divider()
-    st.markdown("**Planned Enhancements (hooks in code):** 3D viewer & glTF export, DWG/DXF via ezdxf, animation to MP4/GIF, detailed non-circular slip (Janbu), and pore-pressure distributions from phreatic surfaces/DEM.")
-
-# End of app
