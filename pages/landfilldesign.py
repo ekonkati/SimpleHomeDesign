@@ -664,8 +664,8 @@ with report_tab:
         "footprint_area": st.session_state.footprint["area"],
         "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
     }
-    excel_bytes = export_excel(input_dump, section, df_boq, df_summary)
-    st.download_button("Download Excel (Inputs+BOQ)", data=excel_bytes, file_name="landfill_design.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    #excel_bytes = export_excel(input_dump, section, df_boq, df_summary)
+    #st.download_button("Download Excel (Inputs+BOQ)", data=excel_bytes, file_name="landfill_design.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # KML
     kml_bytes = export_kml(st.session_state.footprint["coords"]) if simplekml else None
