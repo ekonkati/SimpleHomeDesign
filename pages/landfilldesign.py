@@ -615,12 +615,12 @@ with stab_tab:
     csv_buf = df_slices.to_csv(index=False).encode("utf-8")
 #   st.download_button("Download Slice Table (CSV)", data=csv_buf, file_name="slice_table.csv", mime="text/csv")
 #    st.download_button("Download Excel (Inputs+BOQ)",data=excel_bytes,file_name="landfill_design.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.download_button(
-        "Download Excel (Inputs+BOQ)",
-        data=excel_bytes,
-        file_name="landfill_design.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+#    st.download_button(
+#        "Download Excel (Inputs+BOQ)",
+#        data=excel_bytes,
+#        file_name="landfill_design.xlsx",
+#        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+#    )
 # ---------------------------
 # 4) BOQ & Costing
 # ---------------------------
@@ -647,6 +647,9 @@ with boq_tab:
         st.write("")
 
     df_boq, df_summary = compute_boq(section, liner, rates, st.session_state.footprint["area"], section["plan_length_equiv"])
+    st.session_state.boq = df_boq
+    st.session_state.summary = df_summary
+    
     st.dataframe(df_boq, use_container_width=True)
     st.dataframe(df_summary)
 
@@ -664,6 +667,28 @@ with report_tab:
         "footprint_area": st.session_state.footprint["area"],
         "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
     }
+
+    # Use BOQ/Summary from session_state (set in BOQ tab). Fallback to defaults if not set yet.
+    _df_boq = st.session_state.get("boq", None)
+    _df_summary = st.session_state.get("summary", None)
+    if _df_boq is None or _df_summary is None:
+        # Minimal fallback so the export still works even if the user jumps straight here
+        _liner = WASTE_PRESETS[st.session_state.site.waste_type]["liner"]
+        _df_boq, _df_summary = compute_boq(
+            section, _liner, DEFAULT_RATES,
+            st.session_state.footprint["area"],
+            section["plan_length_equiv"]
+        )
+        st.caption("BOQ not visited—using default rates/preset liner for export.")
+    
+    excel_bytes = export_excel(input_dump, section, _df_boq, _df_summary)
+    
+    st.download_button(
+        "Download Excel (Inputs+BOQ)",
+        data=excel_bytes,
+        file_name="landfill_design.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
     #excel_bytes = export_excel(input_dump, section, df_boq, df_summary)
     #st.download_button("Download Excel (Inputs+BOQ)", data=excel_bytes, file_name="landfill_design.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
