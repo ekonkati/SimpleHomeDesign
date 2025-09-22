@@ -2,10 +2,10 @@
 # streamlit_foundation_app_ascii.py
 # Streamlit App: RCC Foundation Designer (Biaxial Moments, Shear in 2 directions, No-Tension Soil, Pedestal)
 # Author: ChatGPT (GPT-5 Thinking)
-# NOTE: ASCII-safe version for Python 3.13 / Streamlit AST parser
-#  - Removed non-ASCII characters (em dashes, symbols)
-#  - Replaced Greek letters and superscripts with ASCII (phi, m^3, etc.)
-#  - Avoided fancy quotes
+# Notes:
+#  - ASCII-safe: no fancy dashes, greek letters, or superscripts
+#  - Enforces float types for st.number_input to avoid MixedNumericTypes error
+#  - Includes an iterative no-tension soil-pressure solver, summary tables, and PNG+CSV+MD export
 
 import io
 import math
@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+
 
 # ------------------------------ Defaults ------------------------------
 
@@ -54,12 +55,14 @@ def_header = {
     }
 }
 
+
 def default_loads_df():
     return pd.DataFrame([
         {"Combo": "ULS1 (DL+LL)", "Type": "ULS", "P_kN": 1200.0, "Vx_kN": 50.0, "Vy_kN": 40.0, "Mx_kNm": 180.0, "My_kNm": 220.0},
         {"Combo": "ULS2 (DL+EQx)", "Type": "ULS", "P_kN": 950.0, "Vx_kN": 120.0, "Vy_kN": 30.0, "Mx_kNm": 280.0, "My_kNm": 90.0},
         {"Combo": "SLS1 (Service)", "Type": "SLS", "P_kN": 900.0, "Vx_kN": 40.0, "Vy_kN": 35.0, "Mx_kNm": 150.0, "My_kNm": 170.0},
     ])
+
 
 # ------------------------------ Streamlit helper ------------------------------
 
@@ -73,9 +76,15 @@ def num_input_float(label, minv, maxv, val, step, **kwargs):
         **kwargs,
     )
 
+
 # ------------------------------ Pressure Solver ------------------------------
 
 def linear_pressure_full_contact(P, Mx, My, B, L, nx=61, ny=61):
+    """
+    Returns (X, Y, q, ex, ey) for a full-contact linear pressure field.
+    q in kPa if P in kN and dimensions in m.
+    ex = My/P (ecc along x due to moment about y); ey = Mx/P.
+    """
     A = B * L
     ex = My / P if P != 0 else 0.0
     ey = Mx / P if P != 0 else 0.0
@@ -88,9 +97,14 @@ def linear_pressure_full_contact(P, Mx, My, B, L, nx=61, ny=61):
 
 
 def no_tension_correction(P, Mx, My, B, L, max_iter=200, tol=1e-3, nx=61, ny=61):
+    """
+    Iteratively enforce q>=0 while matching P, Mx, My via affine field q = a + b x + c y.
+    Returns (X, Y, q>=0, mask, ex, ey, stats)
+    """
     X, Y, q_init, ex, ey = linear_pressure_full_contact(P, Mx, My, B, L, nx, ny)
     dA = (B/(nx-1)) * (L/(ny-1))
 
+    # Initial affine fit to full-contact field
     A_mat = np.vstack([np.ones_like(X).ravel(), X.ravel(), Y.ravel()]).T
     coeffs, *_ = np.linalg.lstsq(A_mat, q_init.ravel(), rcond=None)
     a, b, c = coeffs.tolist()
@@ -117,6 +131,8 @@ def no_tension_correction(P, Mx, My, B, L, max_iter=200, tol=1e-3, nx=61, ny=61)
             return X, Y, q_pos, mask, ex, ey, stats
 
         Xm = X[mask]; Ym = Y[mask]
+        if Xm.size == 0:
+            break
         ones = np.ones_like(Xm)
         dP = np.array([ones.sum(), Xm.sum(), Ym.sum()]) * dA
         dMx = np.array([Ym.sum(), (Xm*Ym).sum(), (Ym*Ym).sum()]) * dA
@@ -129,11 +145,13 @@ def no_tension_correction(P, Mx, My, B, L, max_iter=200, tol=1e-3, nx=61, ny=61)
             break
         a += float(delta[0]); b += float(delta[1]); c += float(delta[2])
 
+    # Fallback: scale to match P only
     q_field = a + b * X + c * Y
     q_pos = np.clip(q_field, 0.0, None)
     P_num = q_pos.sum() * dA
     scale = P / P_num if P_num > 0 else 1.0
-    return X, Y, q_pos * scale, (q_pos>0), ex, ey, stats
+    return X, Y, q_pos * scale, (q_pos > 0), ex, ey, stats
+
 
 # ------------------------------ Checks ------------------------------
 
@@ -149,21 +167,25 @@ class Geometry:
     ped_py: float
     ped_h: float
 
+
 @dataclass
 class Materials:
     fck: float
     fy: float
     gamma_c: float
 
+
 def effective_depth(D, cover, bar_diam=16e-3):
     return max(D - cover - bar_diam/2.0, 0.05)
+
 
 def bearing_check(q, SBC_SLS_kPa, phi_ULS, combo_type):
     qmax = float(np.max(q))
     qmin = float(np.min(q))
-    limit = SBC_SLS_kPa if combo_type.upper()=="SLS" else SBC_SLS_kPa * phi_ULS
+    limit = SBC_SLS_kPa if combo_type.upper() == "SLS" else SBC_SLS_kPa * phi_ULS
     ok = (qmax <= limit) and (qmin >= -1e-6)
     return {"qmax_kPa": qmax, "qmin_kPa": qmin, "limit_kPa": float(limit), "OK": ok}
+
 
 def sliding_check(P_vert_kN, Vx_kN, Vy_kN, mu):
     R = mu * max(P_vert_kN, 0.0)
@@ -171,33 +193,37 @@ def sliding_check(P_vert_kN, Vx_kN, Vy_kN, mu):
     ok = R >= V
     return {"Resisting_kN": float(R), "Demand_kN": float(V), "OK": ok}
 
+
 def overturning_check(P, Mx, My, B, L):
-    ex = abs(My / P) if P!=0 else 0.0
-    ey = abs(Mx / P) if P!=0 else 0.0
-    kern_x = B/6.0
-    kern_y = L/6.0
+    ex = abs(My / P) if P != 0 else 0.0
+    ey = abs(Mx / P) if P != 0 else 0.0
+    kern_x = B / 6.0
+    kern_y = L / 6.0
     ok = (ex <= kern_x) and (ey <= kern_y)
     return {"ex": float(ex), "ey": float(ey), "kern_x": float(kern_x), "kern_y": float(kern_y), "OK": ok}
+
 
 def one_way_shear_check(q, X, Y, geom: Geometry, mat: Materials):
     d = effective_depth(geom.D, geom.cover)
     dA = (geom.B/(X.shape[1]-1)) * (geom.L/(X.shape[0]-1))
 
+    # X-direction (section parallel to Y) at x = bx/2 + d
     x_crit = geom.bx/2.0 + d
-    Vx_pos = (q[:, X[0]>=x_crit].sum()) * dA
-    Vx_neg = (q[:, X[0]<=-x_crit].sum()) * dA
+    Vx_pos = (q[:, X[0] >= x_crit].sum()) * dA
+    Vx_neg = (q[:, X[0] <= -x_crit].sum()) * dA
     Vx_demand = max(Vx_pos, Vx_neg)
     b_x = geom.L
     tau_vx_MPa = (Vx_demand*1e3) / (b_x * d) / 1000.0
 
+    # Y-direction (section parallel to X) at y = by/2 + d
     y_crit = geom.by/2.0 + d
-    Vy_pos = (q[Y[:,0]>=y_crit, :].sum()) * dA
-    Vy_neg = (q[Y[:,0]<=-y_crit, :].sum()) * dA
+    Vy_pos = (q[Y[:, 0] >= y_crit, :].sum()) * dA
+    Vy_neg = (q[Y[:, 0] <= -y_crit, :].sum()) * dA
     Vy_demand = max(Vy_pos, Vy_neg)
     b_y = geom.B
     tau_vy_MPa = (Vy_demand*1e3) / (b_y * d) / 1000.0
 
-    tau_c = 0.62 * math.sqrt(mat.fck) / 1.5
+    tau_c = 0.62 * math.sqrt(mat.fck) / 1.5  # MPa approx
 
     return {
         "one_way": {
@@ -205,6 +231,7 @@ def one_way_shear_check(q, X, Y, geom: Geometry, mat: Materials):
             "Y": {"V_kN": float(Vy_demand), "tau_v_MPa": float(tau_vy_MPa), "tau_c_MPa": float(tau_c), "OK": tau_vy_MPa <= tau_c},
         }
     }
+
 
 def punching_shear_check(q, X, Y, geom: Geometry, mat: Materials):
     d = effective_depth(geom.D, geom.cover)
@@ -223,64 +250,78 @@ def punching_shear_check(q, X, Y, geom: Geometry, mat: Materials):
 
     return {"u_m": float(u), "V_u_kN": float(V_u), "v_u_MPa": float(v_u_MPa), "v_c_MPa": float(v_c_MPa), "OK": ok}
 
+
 def strip_moments(q, X, Y, geom: Geometry):
+    """
+    Estimate strip design moments at pedestal faces by resultant on each wing * lever arm.
+    Returns kNm for X (from top/bottom wings, about X-axis) and Y (from left/right wings, about Y-axis).
+    """
     dA = (geom.B/(X.shape[1]-1)) * (geom.L/(X.shape[0]-1))
     x_face = geom.ped_px/2.0
     y_face = geom.ped_py/2.0
 
+    # Right/Left wings (about Y-axis)
     right = X[0] >= x_face
-    left  = X[0] <= -x_face
+    left = X[0] <= -x_face
 
     q_right = q[:, right]; Xr = X[:, right]
     Ar = q_right.sum() * dA
-    xcg_r = (q_right * Xr).sum() * dA / Ar if Ar>1e-9 else x_face
+    xcg_r = (q_right * Xr).sum() * dA / Ar if Ar > 1e-9 else x_face
     Mr = Ar * max(xcg_r - x_face, 0.0)
 
     q_left = q[:, left]; Xl = X[:, left]
     Al = q_left.sum() * dA
-    xcg_l = (q_left * (-Xl)).sum() * dA / Al if Al>1e-9 else x_face
+    xcg_l = (q_left * (-Xl)).sum() * dA / Al if Al > 1e-9 else x_face
     Ml = Al * max(xcg_l - x_face, 0.0)
 
     My_design = max(Mr, Ml)
 
-    top   = Y[:,0] >= y_face
-    bottom= Y[:,0] <= -y_face
+    # Top/Bottom wings (about X-axis)
+    top = Y[:, 0] >= y_face
+    bottom = Y[:, 0] <= -y_face
 
     q_top = q[top, :]; Yt = Y[top, :]
     At = q_top.sum() * dA
-    ycg_t = (q_top * Yt).sum() * dA / At if At>1e-9 else y_face
+    ycg_t = (q_top * Yt).sum() * dA / At if At > 1e-9 else y_face
     Mt = At * max(ycg_t - y_face, 0.0)
 
     q_bot = q[bottom, :]; Yb = Y[bottom, :]
     Ab = q_bot.sum() * dA
-    ycg_b = (q_bot * (-Yb)).sum() * dA / Ab if Ab>1e-9 else y_face
+    ycg_b = (q_bot * (-Yb)).sum() * dA / Ab if Ab > 1e-9 else y_face
     Mb = Ab * max(ycg_b - y_face, 0.0)
 
     Mx_design = max(Mt, Mb)
 
     return {"Mx_kNm": float(Mx_design), "My_kNm": float(My_design)}
 
+
 def flexure_steel(M_kNm, geom: Geometry, mat: Materials, strip_width):
+    """
+    Very simplified per-meter strip steel; for detailed design use IS 456 and SP-16.
+    """
     d = effective_depth(geom.D, geom.cover)
     Mu_Nm = M_kNm * 1000.0
     fy = mat.fy * 1e6  # MPa -> N/m^2
     z = 0.9 * d
-    As_m2 = Mu_Nm / (0.87 * fy * z) if z>0 else 0.0
-    As_mm2_per_m = As_m2 * 1e6 / max(strip_width,1e-6)
+    As_m2 = Mu_Nm / (0.87 * fy * z) if z > 0 else 0.0
+    As_mm2_per_m = As_m2 * 1e6 / max(strip_width, 1e-6)
     return {"d_m": float(d), "As_m2": float(As_m2), "As_mm2_per_m": float(As_mm2_per_m)}
+
 
 def pedestal_bearing_check(geom: Geometry, mat: Materials):
     A1 = geom.bx * geom.by
     A2 = geom.ped_px * geom.ped_py
-    inc = math.sqrt(max(A2/A1, 1.0)) if A1>0 else 1.0
+    inc = math.sqrt(max(A2 / A1, 1.0)) if A1 > 0 else 1.0
     sigma_allow = min(0.45 * mat.fck * inc, 0.9 * mat.fck)
     return {"sigma_allow_MPa": float(sigma_allow), "A1_m2": float(A1), "A2_m2": float(A2)}
+
 
 # ------------------------------ Streamlit UI ------------------------------
 
 try:
     st.set_page_config(page_title="RCC Foundation Designer (Biaxial)", layout="wide")
 except Exception:
+    # Some Streamlit builds only allow set_page_config once
     pass
 
 st.title("RCC Foundation Designer - Biaxial Moments, No-Tension Soil, Shear and Punching, Pedestal")
@@ -317,8 +358,8 @@ with st.sidebar:
         ped_px = num_input_float("Pedestal px (m)", bx, 4.0, geometry["ped_px"], 0.05)
         ped_py = num_input_float("Pedestal py (m)", by, 4.0, geometry["ped_py"], 0.05)
         ped_h = num_input_float("Pedestal height (m)", 0.3, 2.0, geometry["ped_h"], 0.05)
-        B = num_input_float("Footing B (m) - x dir size", float(ped_px+0.2), 20.0, geometry["foot_B"], 0.1)
-        L = num_input_float("Footing L (m) - y dir size", float(ped_py+0.2), 20.0, geometry["foot_L"], 0.1)
+        B = num_input_float("Footing B (m) - x dir size", float(ped_px + 0.2), 20.0, geometry["foot_B"], 0.1)
+        L = num_input_float("Footing L (m) - y dir size", float(ped_py + 0.2), 20.0, geometry["foot_L"], 0.1)
         D = num_input_float("Footing overall thickness D (m)", 0.3, 2.0, geometry["foot_D"], 0.05)
         cover = num_input_float("Concrete cover (m)", 0.04, 0.1, geometry["cover"], 0.005)
 
@@ -347,12 +388,14 @@ if run:
         Mx = float(row.get("Mx_kNm", 0.0))
         My = float(row.get("My_kNm", 0.0))
 
-        col1, col2 = st.columns([1,1])
+        col1, col2 = st.columns([1, 1])
         with col1:
             st.markdown(f"### {combo} ({ctype})")
             st.write(f"P={P:.1f} kN, Vx={Vx:.1f} kN, Vy={Vy:.1f} kN, Mx={Mx:.1f} kNm, My={My:.1f} kNm")
 
+        # Pressure field with no-tension correction
         X, Y, q, mask, ex, ey, stats = no_tension_correction(P, Mx, My, geom.B, geom.L, nx=101, ny=101)
+
         bearing = bearing_check(q, SBC, phi_ULS, ctype)
         slide = sliding_check(P, Vx, Vy, mu)
         ot = overturning_check(P, Mx, My, geom.B, geom.L)
@@ -360,9 +403,11 @@ if run:
         punch = punching_shear_check(q, X, Y, geom, mat)
         stripM = strip_moments(q, X, Y, geom)
 
+        # Flexure steel (very simplified per-meter strip)
         steel_x = flexure_steel(stripM["Mx_kNm"], geom, mat, strip_width=1.0)
         steel_y = flexure_steel(stripM["My_kNm"], geom, mat, strip_width=1.0)
 
+        # -------- Plots --------
         with col1:
             fig1, ax1 = plt.subplots()
             im = ax1.imshow(q, extent=[-geom.B/2.0, geom.B/2.0, -geom.L/2.0, geom.L/2.0], origin='lower')
@@ -370,6 +415,7 @@ if run:
             ax1.set_ylabel('y (m)')
             ax1.set_title(f"Soil Pressure Heatmap - {combo}")
             plt.colorbar(im, ax=ax1, label='q (kPa)')
+            # Draw pedestal
             rx = geom.ped_px/2.0; ry = geom.ped_py/2.0
             ax1.plot([-rx, rx, rx, -rx, -rx], [-ry, -ry, ry, ry, -ry])
             st.pyplot(fig1, use_container_width=True)
@@ -392,9 +438,11 @@ if run:
         fig3, ax3 = plt.subplots()
         ax3.set_title(f"Punching Perimeter @ d/2 - {combo}")
         ax3.set_xlabel('x (m)'); ax3.set_ylabel('y (m)')
-        ax3.set_aspect('equal','box')
+        ax3.set_aspect('equal', 'box')
+        # Footing outline
         ax3.plot([-geom.B/2.0, geom.B/2.0, geom.B/2.0, -geom.B/2.0, -geom.B/2.0],
                  [-geom.L/2.0, -geom.L/2.0, geom.L/2.0, geom.L/2.0, -geom.L/2.0])
+        # Pedestal
         ax3.plot([-geom.ped_px/2.0, geom.ped_px/2.0, geom.ped_px/2.0, -geom.ped_px/2.0, -geom.ped_px/2.0],
                  [-geom.ped_py/2.0, -geom.ped_py/2.0, geom.ped_py/2.0, geom.ped_py/2.0, -geom.ped_py/2.0])
         d_eff = effective_depth(geom.D, geom.cover)
@@ -407,6 +455,7 @@ if run:
         plots_png[f"{combo}_punching.png"] = buf3.getvalue()
         plt.close(fig3)
 
+        # Row summary
         row_summary = {
             "Combo": combo, "Type": ctype,
             "qmax_kPa": bearing["qmax_kPa"], "qmin_kPa": bearing["qmin_kPa"], "Bearing_Limit_kPa": bearing["limit_kPa"], "Bearing_OK": bearing["OK"],
@@ -419,56 +468,42 @@ if run:
         }
         results_rows.append(row_summary)
 
+        # Report snippet
         report_text.append(
-            f"## {combo} ({ctype})
-"
-            f"P={P:.1f} kN, Vx={Vx:.1f} kN, Vy={Vy:.1f} kN, Mx={Mx:.1f} kNm, My={My:.1f} kNm
-
-"
-            f"- Eccentricities: e_x={My/P if P else 0:.3f} m, e_y={Mx/P if P else 0:.3f} m; No-tension iters={stats['iters']}, resP={stats['residual_P'] if stats['residual_P'] is not None else 0:.3f} kN
-"
-            f"- Bearing: qmax={bearing['qmax_kPa']:.1f} <= {bearing['limit_kPa']:.1f} kPa -> {'OK' if bearing['OK'] else 'NG'}
-"
-            f"- Sliding: R={slide['Resisting_kN']:.1f} vs V={slide['Demand_kN']:.1f} -> {'OK' if slide['OK'] else 'NG'}
-"
-            f"- One-way shear X/Y -> {('OK' if shear['one_way']['X']['OK'] else 'NG')}/{('OK' if shear['one_way']['Y']['OK'] else 'NG')}
-"
-            f"- Punching: v_u={punch['v_u_MPa']:.3f} <= v_c={punch['v_c_MPa']:.3f} MPa -> {'OK' if punch['OK'] else 'NG'}
-"
-            f"- Strip moments: Mx={stripM['Mx_kNm']:.1f} kNm, My={stripM['My_kNm']:.1f} kNm; As_x={steel_x['As_mm2_per_m']:.0f} mm^2/m, As_y={steel_y['As_mm2_per_m']:.0f} mm^2/m
-"
+            f"## {combo} ({ctype})\n"
+            f"P={P:.1f} kN, Vx={Vx:.1f} kN, Vy={Vy:.1f} kN, Mx={Mx:.1f} kNm, My={My:.1f} kNm\n\n"
+            f"- Eccentricities: e_x={My/P if P else 0:.3f} m, e_y={Mx/P if P else 0:.3f} m; "
+            f"No-tension iters={stats['iters']}, resP={stats['residual_P'] if stats['residual_P'] is not None else 0:.3f} kN\n"
+            f"- Bearing: qmax={bearing['qmax_kPa']:.1f} <= {bearing['limit_kPa']:.1f} kPa -> {'OK' if bearing['OK'] else 'NG'}\n"
+            f"- Sliding: R={slide['Resisting_kN']:.1f} vs V={slide['Demand_kN']:.1f} -> {'OK' if slide['OK'] else 'NG'}\n"
+            f"- One-way shear X/Y -> {('OK' if shear['one_way']['X']['OK'] else 'NG')}/{('OK' if shear['one_way']['Y']['OK'] else 'NG')}\n"
+            f"- Punching: v_u={punch['v_u_MPa']:.3f} <= v_c={punch['v_c_MPa']:.3f} MPa -> {'OK' if punch['OK'] else 'NG'}\n"
+            f"- Strip moments: Mx={stripM['Mx_kNm']:.1f} kNm, My={stripM['My_kNm']:.1f} kNm; "
+            f"As_x={steel_x['As_mm2_per_m']:.0f} mm^2/m, As_y={steel_y['As_mm2_per_m']:.0f} mm^2/m\n"
         )
 
+    # Results table
     res_df = pd.DataFrame(results_rows)
     st.subheader("Design Summary - All Combos")
     st.dataframe(res_df, use_container_width=True)
 
+    # Pedestal check (common)
     ped_check = pedestal_bearing_check(geom, mat)
     st.subheader("Pedestal Bearing Check (IS 456 - simplified)")
     st.json(ped_check)
 
+    # Downloads: CSV + ZIP of plots + Markdown report
     csv_buf = io.StringIO(); res_df.to_csv(csv_buf, index=False); csv_bytes = csv_buf.getvalue().encode()
 
     md_report = (
-        f"# {title} - {location}
-
-"
-        f"Designer: {designer}  
-"
-        f"Reviewer: {reviewer}  
-"
-        f"fck: {mat.fck} MPa, fy: {mat.fy} MPa  
-"
-        f"Footing: BxLxD = {geom.B}x{geom.L}x{geom.D} m, Cover={geom.cover} m  
-"
-        f"Pedestal: {geom.ped_px}x{geom.ped_py}x{geom.ped_h} m  
-"
-        f"SBC@SLS: {SBC} kPa (phi_ULS={phi_ULS})
-
-"
-        + "
-
-".join(report_text)
+        f"# {title} - {location}\n\n"
+        f"Designer: {designer}  \n"
+        f"Reviewer: {reviewer}  \n"
+        f"fck: {mat.fck} MPa, fy: {mat.fy} MPa  \n"
+        f"Footing: BxLxD = {geom.B}x{geom.L}x{geom.D} m, Cover={geom.cover} m  \n"
+        f"Pedestal: {geom.ped_px}x{geom.ped_py}x{geom.ped_h} m  \n"
+        f"SBC@SLS: {SBC} kPa (phi_ULS={phi_ULS})\n\n"
+        + "\n\n".join(report_text)
     )
 
     zip_buf = io.BytesIO()
@@ -481,11 +516,14 @@ if run:
 
     st.download_button("Download package (CSV + plots + report.md)", data=zip_buf, file_name="foundation_design_outputs.zip")
 
+
+# ------------------------------ Notes & Next Steps ------------------------------
+
 with st.expander("Method Notes and Next Steps"):
     st.markdown(
         """
 Pressure Solver  
-This app enforces no-tension soil by iteratively clipping negative pressure and matching target P, Mx, My via a small least-squares update on an affine pressure field q = a + b x + c y. It produces a realistic contact polygon and heatmap even for large eccentricities. Cross-check with FEM or closed-form methods for critical designs.
+This app enforces no-tension soil by iteratively clipping negative pressure and matching target P, Mx, My via a small least-squares update on an affine field q = a + b x + c y. It gives a realistic contact polygon and heatmap even for large eccentricities. Cross-check with FEM or closed-form methods for critical designs.
 
 Advancements to add next:
 1) Optimization loop on B, L, D to minimize concrete/steel while satisfying governing check.
