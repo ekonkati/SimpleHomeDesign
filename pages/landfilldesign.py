@@ -614,12 +614,7 @@ with stab_tab:
     # Download slice table
     csv_buf = df_slices.to_csv(index=False).encode("utf-8")
 #   st.download_button("Download Slice Table (CSV)", data=csv_buf, file_name="slice_table.csv", mime="text/csv")
-    st.download_button(
-        "Download Excel (Inputs+BOQ)",
-        data=excel_bytes,
-        file_name="landfill_design.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+    st.download_button("Download Excel (Inputs+BOQ)",data=excel_bytes,file_name="landfill_design.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 # ---------------------------
 # 4) BOQ & Costing
 # ---------------------------
