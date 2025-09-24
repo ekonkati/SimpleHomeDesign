@@ -8,3 +8,4 @@ reportlab
 simplekml
 shapely
 fpdf2
+plotly
