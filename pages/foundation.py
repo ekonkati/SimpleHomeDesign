@@ -1,9 +1,8 @@
 
-# app.py — Biaxial Footing Designer (Streamlit Skeleton)
-# ------------------------------------------------------
+# app.py — Biaxial Footing Designer (Streamlit Skeleton, Patched)
+# ---------------------------------------------------------------
 # Tabs: Inputs → Bearing/Contact → Stability → Shear → Flexure → Pedestal → Anchors → Detailing → Output
 # Units (default): kN, m, MPa (N/mm^2). Convert carefully inside calc functions.
-# Codes to consult when completing formulas: IS 456, IS 6403/1904, IS 875/1893, ACI 318 Ch.17 (anchors).
 
 import math
 from dataclasses import dataclass
@@ -41,10 +40,10 @@ class Pedestal:
 @dataclass
 class Loads:
     N_serv: float  # kN (service)
-    Mx_serv: float # kN·m (service, about X-axis, causes pressure varying along Y)
-    My_serv: float # kN·m (service, about Y-axis, causes pressure varying along X)
-    Hx_serv: float # kN horizontal (service)
-    Hy_serv: float # kN horizontal (service)
+    Mx_serv: float # kN·m (service)
+    My_serv: float # kN·m (service)
+    Hx_serv: float # kN (service)
+    Hy_serv: float # kN (service)
 
     N_uls: float   # kN (ULS)
     Mx_uls: float  # kN·m (ULS)
@@ -71,10 +70,7 @@ def ecc(N: float, Mx: float, My: float) -> Tuple[float, float]:
     return Mx / N, My / N
 
 def full_contact_pressures(N: float, Mx: float, My: float, B: float, L: float) -> Dict[str, Any]:
-    """
-    Full-contact biaxial linear pressure distribution.
-    Returns qmax, qmin (kPa), ex, ey, within_kern(bool).
-    """
+    """Full-contact biaxial linear pressure distribution. Returns qmax, qmin (kPa), ex, ey, within_kern."""
     ex, ey = ecc(N, Mx, My)
     within_kern = (abs(ex) <= B/6.0) and (abs(ey) <= L/6.0)
     q0 = N / (B*L)  # kN/m^2
@@ -83,9 +79,7 @@ def full_contact_pressures(N: float, Mx: float, My: float, B: float, L: float) -
     return {"ex": ex, "ey": ey, "within_kern": within_kern, "qmax": qmax, "qmin": qmin}
 
 def partial_contact_effective_dims(N: float, Mx: float, My: float, B: float, L: float) -> Dict[str, Any]:
-    """
-    Conservative partial-contact approach: reduced dimensions Bc, Lc; qmax ≈ 4N/(Bc*Lc).
-    """
+    """Conservative partial-contact approach: reduced dimensions Bc, Lc; qmax ≈ 4N/(Bc*Lc)."""
     ex, ey = ecc(N, Mx, My)
     Bc = B - 6.0*abs(ex)
     Lc = L - 6.0*abs(ey)
@@ -99,24 +93,13 @@ def base_weight(geom: Geometry, mat: Materials) -> float:
     return geom.B * geom.L * geom.D * mat.gamma_c
 
 def stability_checks_service(loads: Loads, geom: Geometry, soil: Soil, mat: Materials) -> Dict[str, Any]:
-    """
-    Simple sliding/uplift snapshot at service. Overturning captured by bearing kernel test already.
-    Horizontal resultant vs. frictional capacity using N_base = N_serv + Wf.
-    """
+    """Simple sliding/uplift snapshot at service. Overturning by bearing kernel test already."""
     Wf = base_weight(geom, mat)
-    Hres = math.hypot(loads.Hx_serv, loads.Hy_serv)
-    N_base = loads.N_serv + Wf  # add self-weight (can also add soil overburden if intended)
-    R_cap = mat.mu_base * max(0.0, N_base)  # kN
-    sliding_ok = Hres <= R_cap
-    uplift_ok = (loads.N_serv + Wf) > 0.0
-    return {
-        "Wf": Wf,
-        "Hres": Hres,
-        "N_base": N_base,
-        "R_cap": R_cap,
-        "sliding_ok": sliding_ok,
-        "uplift_ok": uplift_ok
-    }
+    Hres = (loads.Hx_serv**2 + loads.Hy_serv**2) ** 0.5
+    N_base = loads.N_serv + Wf
+    R_cap = mat.mu_base * max(0.0, N_base)
+    return {"Wf": Wf, "Hres": Hres, "N_base": N_base, "R_cap": R_cap,
+            "sliding_ok": Hres <= R_cap, "uplift_ok": (loads.N_serv + Wf) > 0.0}
 
 def eff_depth(geom: Geometry, bar_d_mm: float) -> float:
     """Effective depth d (m) using bottom cover and half bar dia (simple)."""
@@ -124,55 +107,36 @@ def eff_depth(geom: Geometry, bar_d_mm: float) -> float:
     return max(0.0, d)
 
 def one_way_shear_ULS(q_design: float, span_m: float, d: float, strip_width: float=1.0) -> float:
-    """
-    Simplified one-way shear demand V_u on a strip of unit width using a triangular/rectangular soil pressure idealization.
-    Here q_design is resultant soil pressure (kN/m^2). This is a placeholder; finalize per IS 456.
-    """
-    # Assume worst-case: V = q * (cantilever length) * strip_width
-    Vu = q_design * span_m * strip_width  # kN
-    # Return demand; capacity check must use IS456 tau_c etc.
-    return Vu
+    """Very simplified one-way shear demand Vu on a strip of unit width."""
+    return q_design * span_m * strip_width  # kN
 
 def punching_perimeter(bp: float, lp: float, d: float) -> float:
     """Critical punching perimeter b0 at distance d from pedestal loaded area (m)."""
     return 2.0 * ((bp + 2*d) + (lp + 2*d))
 
 def design_flexure_As(Mu_kNm: float, d_m: float, fy_MPa: float, fck_MPa: float) -> float:
-    """
-    Quick rectangular section As (mm^2/m) using a working approximation:
-    Mu (kN·m/m strip), d (m). Convert to N·mm and solve As ≈ Mu / (0.87*fy*z).
-    Take z ≈ 0.9d as starter (refine with code curves later).
-    """
+    """Quick As (mm^2/m) approximation; enforce simple min steel placeholder."""
     if d_m <= 0:
         return 0.0
-    Mu_Nmm = Mu_kNm * 1e6  # kN·m to N·mm
+    Mu_Nmm = Mu_kNm * 1e6
     z_mm = 0.9 * d_m * 1000.0
     As_mm2_per_m = Mu_Nmm / max(1e-6, (0.87 * fy_MPa * z_mm))
-    # Enforce minimum steel per IS 456 (0.12% for mild? For footings use code min; placeholder here)
-    # Min As ≈ 0.12% of b*d for Fe415? We'll use 0.12% of 1000*d_mm as a quick placeholder:
     d_mm = d_m * 1000.0
     As_min = 0.0012 * (1000.0 * d_mm)
     return max(As_mm2_per_m, As_min)
 
 def bar_schedule_from_As(As_req_mm2_per_m: float, preferred_dia_mm_list=BAR_DIAMETERS, max_spacing_mm=250) -> Dict[str, Any]:
-    """
-    Suggest bar dia and spacing for a target As per meter.
-    As_provided_per_m = (area_one_bar_mm2) * (1000 / spacing_mm).
-    We choose the largest spacing ≤ max_spacing that still meets As.
-    """
+    """Suggest bar dia and spacing for a target As per meter."""
     best = None
     for dia in preferred_dia_mm_list:
         area = math.pi * (dia**2) / 4.0
-        # spacing needed to meet or exceed As
         spacing_mm = min(max_spacing_mm, (area * 1000.0) / max(1e-6, As_req_mm2_per_m))
-        # Round spacing to a practical value (nearest 10 mm)
         spacing_mm = max(75.0, round(spacing_mm / 10.0) * 10.0)
         As_prov = area * (1000.0 / spacing_mm)
         ok = As_prov >= As_req_mm2_per_m
         candidate = {"dia_mm": dia, "spacing_mm": spacing_mm, "As_prov_mm2_per_m": As_prov, "meets": ok}
         if ok and (best is None or As_prov < best["As_prov_mm2_per_m"]):
             best = candidate
-    # If nothing meets within max spacing, pick tightest spacing with largest dia as fallback
     if best is None:
         dia = preferred_dia_mm_list[-1]
         area = math.pi * (dia**2) / 4.0
@@ -187,7 +151,7 @@ def bar_schedule_from_As(As_req_mm2_per_m: float, preferred_dia_mm_list=BAR_DIAM
 
 st.set_page_config(page_title="Biaxial Footing Designer (Skeleton)", layout="wide")
 
-st.title("🧱 Biaxial Footing Designer — Streamlit Skeleton")
+st.title("🧱 Biaxial Footing Designer — Streamlit Skeleton (Patched)")
 st.caption("Tabs: Inputs → Bearing/Contact → Stability → Shear → Flexure → Pedestal → Anchors → Detailing → Output")
 
 tabs = st.tabs([
@@ -233,7 +197,6 @@ with tabs[0]:
         Hx_uls = st.number_input("Hx (ULS) kN", value=0.0, step=1.0)
         Hy_uls = st.number_input("Hy (ULS) kN", value=0.0, step=1.0)
 
-    # Pedestal quick inputs
     st.markdown("**Pedestal (for punching & bearing)**")
     colp1, colp2, colp3 = st.columns(3)
     with colp1:
@@ -243,7 +206,6 @@ with tabs[0]:
     with colp3:
         hp = st.number_input("Pedestal height hp (m)", min_value=0.2, value=0.6, step=0.05)
 
-    # Persist to session_state
     st.session_state["geom"] = Geometry(B, L, D, cover_bot, cover_top)
     st.session_state["mat"] = Materials(fck, fy, gamma_c, mu_base)
     st.session_state["soil"] = Soil(qall_sls, gamma_soil, wtb)
@@ -264,7 +226,10 @@ with tabs[1]:
     st.write(f"Kern check: within kern? **{res['within_kern']}**")
     st.write(f"Full-contact pressures: q_max = **{res['qmax']:.1f} kPa**, q_min = **{res['qmin']:.1f} kPa**")
     ok_full = (res["within_kern"] and (res["qmax"] <= soil.qall_sls) and (res["qmin"] >= 0.0))
-    st.success("Full contact OK against allowable bearing.") if ok_full else st.warning("Full contact NOT OK → consider partial contact / resizing.")
+    if ok_full:
+        st.success("Full contact OK against allowable bearing.")
+    else:
+        st.warning("Full contact NOT OK → consider partial contact / resizing.")
 
     with st.expander("Partial Contact (no-tension) — Conservative"):
         par = partial_contact_effective_dims(loads.N_serv, loads.Mx_serv, loads.My_serv, geom.B, geom.L)
@@ -302,30 +267,26 @@ with tabs[3]:
     mat: Materials = st.session_state["mat"]
     loads: Loads = st.session_state["loads"]
 
-    # Placeholder soil pressure for ULS: assume uniform equal to N_uls/(B*L)
     q_uls = loads.N_uls / (geom.B * geom.L)  # kPa
     st.write(f"Assumed ULS soil pressure (placeholder): **{q_uls:.1f} kPa**")
 
-    # Effective depth with a trial bar size (user-selectable)
     bar_d = st.selectbox("Trial main bar dia (mm) for d calc", BAR_DIAMETERS, index=2)
     d_m = eff_depth(geom, bar_d)
 
     st.write(f"Effective depth d ≈ **{d_m:.3f} m** (with {bar_d} mm bars)")
 
-    # One-way shear along B and L (very simplified placeholder; replace with code-calibrated positions)
     cant_B = (geom.B - ped.bp) / 2.0
     cant_L = (geom.L - ped.lp) / 2.0
-    Vu_x = one_way_shear_ULS(q_uls, cant_L, d_m)  # shear for strip spanning along L (critical near pedestal face)
+    Vu_x = one_way_shear_ULS(q_uls, cant_L, d_m)
     Vu_y = one_way_shear_ULS(q_uls, cant_B, d_m)
 
     c1, c2 = st.columns(2)
     c1.metric("One-way shear Vu_x (kN/m strip)", f"{Vu_x:.1f}")
     c2.metric("One-way shear Vu_y (kN/m strip)", f"{Vu_y:.1f}")
 
-    # Punching perimeter at d
     b0 = punching_perimeter(ped.bp, ped.lp, d_m)
     st.write(f"Punching critical perimeter b0 ≈ **{b0:.3f} m**")
-    st.info("👉 Finalize τ_v vs τ_c checks per IS 456 (punching & beam shear) and include reinforcement if needed. This is a scaffold.")
+    st.info("👉 Finalize τ_v vs τ_c checks per IS 456 (punching & beam shear).")
 
 # ---------- Flexure Tab ----------
 with tabs[4]:
@@ -335,21 +296,18 @@ with tabs[4]:
     mat: Materials = st.session_state["mat"]
     loads: Loads = st.session_state["loads"]
 
-    # Very simplified: take ULS soil as uniform; compute cantilever strip moments about pedestal faces.
-    q_uls = loads.N_uls / (geom.B * geom.L)  # kPa = kN/m^2
-    # Cantilevers from pedestal face to footing edge each side:
+    q_uls = loads.N_uls / (geom.B * geom.L)  # kPa
     cant_B = (geom.B - ped.bp) / 2.0
     cant_L = (geom.L - ped.lp) / 2.0
 
-    # For a uniformly distributed load w=q (kN/m^2) over cantilever a (m), moment at face ~ w*a^2/2 per meter width.
-    Mu_x = q_uls * (cant_L**2) / 2.0  # kN·m per m strip (span along L → bottom steel in X-direction)
-    Mu_y = q_uls * (cant_B**2) / 2.0  # kN·m per m strip
+    Mu_x = q_uls * (cant_L**2) / 2.0  # kN·m/m
+    Mu_y = q_uls * (cant_B**2) / 2.0  # kN·m/m
 
     bar_d = st.selectbox("Design bar dia (mm)", BAR_DIAMETERS, index=2, key="flex_bar_d")
     d_m = eff_depth(geom, bar_d)
 
-    As_x = design_flexure_As(Mu_x, d_m, mat.fy, mat.fck)  # mm^2/m (bottom steel in X, resists bending about Y)
-    As_y = design_flexure_As(Mu_y, d_m, mat.fy, mat.fck)  # mm^2/m
+    As_x = design_flexure_As(Mu_x, d_m, mat.fy, mat.fck)  # mm²/m
+    As_y = design_flexure_As(Mu_y, d_m, mat.fy, mat.fck)  # mm²/m
 
     st.write(f"Design moments (placeholder): Mu_x = **{Mu_x:.2f} kN·m/m**, Mu_y = **{Mu_y:.2f} kN·m/m**")
     c1, c2 = st.columns(2)
@@ -371,44 +329,38 @@ with tabs[4]:
 # ---------- Pedestal Tab ----------
 with tabs[5]:
     st.subheader("6) Pedestal — Bearing & Ties (Skeleton)")
-    geom: Geometry = st.session_state["geom"]
-    ped: Pedestal = st.session_state["ped"]
-    mat: Materials = st.session_state["mat"]
-    loads: Loads = st.session_state["loads"]
-
     st.write("**Concrete bearing under pedestal on footing (IS 456 enhancement):**")
     st.latex(r"\sigma_{c,allow} \le 0.45 f_{ck} \sqrt{A_1/A_2}")
-    st.write("Define A1 (loaded area) and A2 (supporting area within permitted dispersion). Provide pedestal vertical bars and ties like a short column if moments are large.")
-    st.info("Include local top reinforcement under pedestal; ensure development length and tie spacing per IS 456. This tab is a placeholder scaffold.")
+    st.write("Define A1 (loaded area) and A2 (supporting area within permitted dispersion). Provide vertical bars and ties as needed.")
 
-# ---------- Anchors Tab ----------
+# ---------- Anchors Tab (Patched) ----------
 with tabs[6]:
     st.subheader("7) Anchors — Layout & Checks (Skeleton)")
-    st.write("If anchors are required (uplift/overturning), compute bolt-group tensions from N & Mx, My.")
-    st.code("""
-# Example tension in bolts (group about centroid)
-# T_i = N_t/n_t + (Mx*y_i)/sum(y^2) + (My*x_i)/sum(x^2)   (only bolts in tension)
-# Then check:
+    st.markdown("If anchors are required (uplift/overturning), compute bolt-group tensions from N and Mx, My.")
+    st.code(
+        '''
+# Example: tension in bolts of a rectangular group about centroid
+# (Only bolts in tension considered)
+T_i = N_t/n_t + (Mx*y_i)/sum(y**2) + (My*x_i)/sum(x**2)
+
+# Then check (per ACI 318-19 Chapter 17 or project spec):
 # - Steel tension/yield
 # - Concrete breakout (tension), pull-out, side-face blowout
-# - Shear breakout / pry-out
-# - Edge distances, embedment, spacing
-# - Link/hairpin bars around anchor pockets to control splitting
-# Adopt ACI 318-19 Ch.17 or manufacturer approvals.
-    """, language="python")
-    st.info("Provide base plate geometry, grout, and edge cover. Adopt project anchor spec.")
+# - Shear breakout / pry-out and steel shear
+# - Edge distances, spacing, embedment
+# Provide hairpins/ties around anchor group to control splitting.
+        ''',
+        language="python"
+    )
+    st.info("Provide base plate geometry, grout thickness, and minimum edge cover in concrete.")
 
 # ---------- Detailing Tab ----------
 with tabs[7]:
     st.subheader("8) Detailing — Mesh & Notes (Skeleton)")
-    geom: Geometry = st.session_state["geom"]
-    mat: Materials = st.session_state["mat"]
-
     st.write("**Bottom mesh:** from Flexure tab (X & Y may differ).")
     st.write("**Top mesh:** provide under pedestal / uplift zones; ensure code minimums and spacing limits.")
-    st.write("**Cover & laps:** respect clear cover (durability class), lap positions away from peak moments, development length Ld per IS 456.")
+    st.write("**Cover & laps:** respect clear cover and Ld per IS 456; stagger laps away from peak moments.")
     st.write("**Shear reinforcement:** if adopted for one-way shear or punching (stud rails/links).")
-    st.write("**Construction notes:** blinding layer, key (if used), waterproofing, sulfate exposure, pour sequence, grout for base plates.")
 
 # ---------- Output Tab ----------
 with tabs[8]:
@@ -419,7 +371,6 @@ with tabs[8]:
     soil: Soil = st.session_state["soil"]
     loads: Loads = st.session_state["loads"]
 
-    # Bearing re-summary
     res = full_contact_pressures(loads.N_serv, loads.Mx_serv, loads.My_serv, geom.B, geom.L)
     par = partial_contact_effective_dims(loads.N_serv, loads.Mx_serv, loads.My_serv, geom.B, geom.L)
 
@@ -442,5 +393,4 @@ with tabs[8]:
                  ]
     })
     st.dataframe(df, use_container_width=True)
-
-    st.success("This is a working skeleton. Replace placeholder formulas with full IS-code checks as you iterate.")
+    st.success("Patched version: removed any accidental execution/doc rendering in code blocks.")
