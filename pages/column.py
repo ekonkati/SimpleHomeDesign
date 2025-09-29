@@ -281,6 +281,57 @@ def pm_curve(section: Section, fck: float, fy: float, axis: str, n: int = 80):
 
 
 # -----------------------------
+# Required steel estimator (biaxial)
+# -----------------------------
+
+def scale_section_bars(section: Section, s_area: float) -> Section:
+    """Return a new Section with bar diameters scaled so bar areas multiply by s_area.
+    Uses dia' = dia * sqrt(s_area)."""
+    k = math.sqrt(max(s_area, 1e-6))
+    new_bars = [(x, y, d * k) for (x, y, d) in section.bars]
+    return Section(b=section.b, D=section.D, cover=section.cover, bars=new_bars)
+
+
+def biaxial_utilization(section: Section, fck: float, fy: float, Pu: float, Mux_eff: float, Muy_eff: float, alpha: float = 1.0) -> Tuple[float, float, float]:
+    """Return (util, Mux_lim, Muy_lim) for given demand using current section bars."""
+    Mux_lim = uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='x')
+    Muy_lim = uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='y')
+    Rx = (Mux_eff / max(Mux_lim, 1e-9)) ** alpha
+    Ry = (Muy_eff / max(Muy_lim, 1e-9)) ** alpha
+    util = Rx + Ry
+    return util, Mux_lim, Muy_lim
+
+
+def required_As_biaxial(section: Section, fck: float, fy: float, Pu: float, Mux_eff: float, Muy_eff: float, alpha: float, As_min: float, s_max: float = 5.0) -> Tuple[float, float, float]:
+    """Find required longitudinal steel area (mm²) to satisfy biaxial utilization ≤ 1 by
+    uniformly scaling all bar areas (keeping geometry). Returns (As_required, s_required, util_now).
+    s_required is the area scale factor relative to current As_prov.
+    """
+    As_prov = sum(bar_area(d) for (_, _, d) in section.bars)
+    util_now, _, _ = biaxial_utilization(section, fck, fy, Pu, Mux_eff, Muy_eff, alpha)
+
+    # If already safe and ≥ As_min → return current
+    if util_now <= 1.0 and As_prov >= As_min:
+        return As_prov, 1.0, util_now
+
+    # Lower bound: meet minimum steel, or current
+    s_lo = max(1.0, As_min / max(As_prov, 1e-6))
+    s_hi = max(s_lo + 1e-6, s_max)
+
+    # If even huge scale cannot pass (very unlikely), return hi
+    for _ in range(50):
+        s_mid = 0.5 * (s_lo + s_hi)
+        sec_mid = scale_section_bars(section, s_mid)
+        util_mid, _, _ = biaxial_utilization(sec_mid, fck, fy, Pu, Mux_eff, Muy_eff, alpha)
+        if util_mid <= 1.0:
+            s_hi = s_mid
+        else:
+            s_lo = s_mid
+    As_req = As_prov * s_hi
+    return As_req, s_hi, util_now
+
+
+# -----------------------------
 # SVG Cross-section drawing
 # -----------------------------
 
@@ -592,10 +643,36 @@ with T6:
     else:
         st.error("Reduce tie spacing to meet cap (or apply ductile detailing rules if applicable).")
 
-    # SVG again with labels
-    st.markdown("#### Cross-section Detailing (SVG)")
+    # SVG again with labels + Ast comparison panel
+st.markdown("#### Cross-section & Steel Requirement")
+left, right = st.columns([1.3, 1])
+with left:
     svg = svg_cross_section(Section(b, D, cover, state["bars"]), tie_dia=float(state["tie_dia"]), tie_spacing=float(state["tie_spacing"]))
     st.components.v1.html(svg, height=min(600, int(D + 100)))
+with right:
+    # Current/provided steel
+    As_prov = As_long
+    # Demand (use magnified moments and current alpha if available)
+    Mux_eff = state.get("Mux_eff", state.get("Mux", 0.0))
+    Muy_eff = state.get("Muy_eff", state.get("Muy", 0.0))
+    alpha = state.get("alpha", 1.0)
+    Pu = state.get("Pu", 0.0)
+    # Required steel by biaxial capacity (≥ As_min)
+    As_req_cap, s_req, util_now = required_As_biaxial(Section(b, D, cover, state["bars"]), fck, fy, Pu, Mux_eff, Muy_eff, alpha, As_min)
+    As_governing = max(As_req_cap, As_min)
+    delta_As = max(0.0, As_governing - As_prov)
+    ratio = As_governing / max(As_prov, 1e-6)
+
+    st.metric("Ast provided (mm²)", f"{As_prov:.0f}")
+    st.metric("Ast required (capacity) (mm²)", f"{As_req_cap:.0f}")
+    st.metric("Ast minimum (IS) (mm²)", f"{As_min:.0f}")
+    st.metric("Governing Ast (mm²)", f"{As_governing:.0f}")
+    if util_now <= 1.0 and As_prov >= As_min:
+        st.success("Design PASS for current bars (biaxial & min steel).")
+    else:
+        st.error("Design NOT SAFE with current bars. Increase steel or revise layout.")
+        st.write(f"Add **{delta_As:.0f} mm²** (≈ {100*(ratio-1):.1f}% increase) to meet requirement.")
+    st.caption("Estimator assumes uniform scaling of all bars; distribution still matters for final detailing.")
 
 # -----------------------------
 # Tab 7: Output Summary
