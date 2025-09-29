@@ -454,9 +454,9 @@ with T1:
                       tie_dia=tie_dia, tie_spacing=tie_spacing, bars=bars))
 
     # Quick visualization
-    st.markdown("#### Cross-section Preview (SVG)")
-    svg = svg_cross_section(section, tie_dia=float(tie_dia), tie_spacing=float(tie_spacing))
-    st.components.v1.html(svg, height=min(600, int(D + 100)))
+    #st.markdown("#### Cross-section Preview (SVG)")
+    #svg = svg_cross_section(section, tie_dia=float(tie_dia), tie_spacing=float(tie_spacing))
+    #st.components.v1.html(svg, height=min(600, int(D + 100)))
 
 # -----------------------------
 # Tab 2: Slenderness
