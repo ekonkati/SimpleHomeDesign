@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
+import matplotlib.pyplot as plt
 import streamlit as st
 
 # -----------------------------
@@ -227,6 +228,59 @@ def uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: flo
 
 
 # -----------------------------
+# PM Interaction Curve (uniaxial)
+# -----------------------------
+
+def pm_curve(section: Section, fck: float, fy: float, axis: str, n: int = 80):
+    """Generate (P, M) points by sweeping neutral axis depth c.
+    Returns lists of N (compression +) in N and M in Nmm for the chosen axis ('x' or 'y')."""
+    b, D = section.b, section.D
+
+    def forces_and_moment(c: float):
+        # Concrete block
+        if axis == 'x':
+            xu = min(c, D)
+            Cc = 0.36 * fck * b * xu
+            arm_Cc = (D / 2.0) - (0.42 * xu)
+            Mc = Cc * arm_Cc
+        else:  # 'y'
+            xu = min(c, b)
+            Cc = 0.36 * fck * D * xu
+            arm_Cc = (b / 2.0) - (0.42 * xu)
+            Mc = Cc * arm_Cc
+        # Steel
+        Fs = 0.0
+        Ms = 0.0
+        for (x, y, dia) in section.bars:
+            As = bar_area(dia)
+            if axis == 'x':
+                strain = EPS_CU * (1.0 - (y / max(c, 1e-6)))
+                stress = np.clip(ES * strain, -0.87 * fy, 0.87 * fy)
+                force = stress * As
+                z = (D / 2.0) - y
+            else:
+                strain = EPS_CU * (1.0 - (x / max(c, 1e-6)))
+                stress = np.clip(ES * strain, -0.87 * fy, 0.87 * fy)
+                force = stress * As
+                z = (b / 2.0) - x
+            Fs += force
+            Ms += force * z
+        N = Cc + Fs
+        M = Mc + Ms
+        return N, M
+
+    cmin = 0.01 * (D if axis == 'x' else b)
+    cmax = 1.50 * (D if axis == 'x' else b)
+    cs = np.linspace(cmin, cmax, n)
+    P_list, M_list = [], []
+    for c in cs:
+        N, M = forces_and_moment(c)
+        P_list.append(N)
+        M_list.append(abs(M))  # envelope magnitude
+    return P_list, M_list
+
+
+# -----------------------------
 # SVG Cross-section drawing
 # -----------------------------
 
@@ -436,7 +490,30 @@ with T4:
     else:
         st.error("Biaxial interaction FAIL — increase section/steel or revise layout.")
 
-    state.update(dict(Mux_lim=Mux_lim, Muy_lim=Muy_lim, util=util, alpha=alpha))
+    # --- PM interaction curves (live, updates with rebar/layout edits)
+with st.expander("P–M Interaction Curves", expanded=True):
+    colx, coly = st.columns(2)
+    with colx:
+        Px, Mx = pm_curve(section, fck, fy, axis='x', n=120)
+        figx, axx = plt.subplots()
+        axx.plot(np.array(Px)/1e3, np.array(Mx)/1e6)
+        axx.scatter(Pu/1e3, abs(Mux_eff)/1e6, marker='x')
+        axx.set_xlabel('P (kN)')
+        axx.set_ylabel('M_x (kNm)')
+        axx.set_title('P–M_x (capacity envelope)')
+        st.pyplot(figx, use_container_width=True)
+    with coly:
+        Py, My = pm_curve(section, fck, fy, axis='y', n=120)
+        figy, axy = plt.subplots()
+        axy.plot(np.array(Py)/1e3, np.array(My)/1e6)
+        axy.scatter(Pu/1e3, abs(Muy_eff)/1e6, marker='x')
+        axy.set_xlabel('P (kN)')
+        axy.set_ylabel('M_y (kNm)')
+        axy.set_title('P–M_y (capacity envelope)')
+        st.pyplot(figy, use_container_width=True)
+
+# Update state after drawing curves
+state.update(dict(Mux_lim=Mux_lim, Muy_lim=Muy_lim, util=util, alpha=alpha))
 
 # -----------------------------
 # Tab 5: Shear
