@@ -335,22 +335,20 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
     gamma_f_LL = 1.5
     gamma_m = 1.5
     
-    # M_limit (for check against failure) - THIS LINE IS REMOVED/COMMENTED OUT
-    # fck = mat.fck
-    # fy = mat.fy
-    # M_limit = 0.138 * fck * 1000 * (mat.H_wall * 1000)**2 # <-- REMOVE THIS LINE
+    # 💥 FIX: Define fck and fy locally from the mat object
+    fck = mat.fck
+    fy = mat.fy
     
     # --- STEM DESIGN (Factored Earth + Surcharge + Water Moments) ---
     
     # Stem depth (d) = t_stem - cover - bar_dia/2 (simplified to -cover)
     d_stem = geo.t_stem * 1000 - mat.cover - 12 # Assume 12mm bar for initial calc (mm)
     
-    
     # Moments at Base of Stem (Critical Section)
     P_earth_u = pres['P_earth'] * gamma_f_DL
     P_surcharge_u = pres['P_surcharge'] * gamma_f_LL
     P_water_u = pres['P_water'] * gamma_f_DL
-    P_seismic_u = pres['P_seismic'] * gamma_f_DL # Assuming seismic is DL for simplicity
+    P_seismic_u = pres['P_seismic'] * gamma_f_DL 
     
     Mu_stem = (P_earth_u * pres['y_earth']) + \
               (P_surcharge_u * pres['y_surcharge']) + \
@@ -358,19 +356,14 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
               (P_seismic_u * pres['y_seismic'])
               
     # Required Steel Area (As_req)
-    # As = (0.5*fck/fy) * (1 - sqrt(1 - 4.6*Mu / (fck*b*d^2))) * b*d
+    # Robustness Check (prevents math domain error)
+    R_stem = (4.6 * Mu_stem * 1e6) / (fck * 1000 * d_stem**2)
     
-    # Calculate term inside the square root
-    R = (4.6 * Mu_stem * 1e6) / (fck * 1000 * d_stem**2)
-    
-    if R >= 1:
-        # Section is over-stressed (requires compression steel or a larger section)
-        # For simplicity, we limit R to 0.999 to get max As for singly reinforced section.
-        # This will flag the need for a larger section.
-        st.warning(f"Stem section is highly stressed (R={R:.2f}). Increase thickness or fck.")
-        R = 0.999
+    if R_stem >= 1.0:
+        st.warning(f"Stem is over-stressed (R={R_stem:.2f}). Increase stem thickness or fck.")
+        R_stem = 0.999 # Use max As_req for singly reinforced design
         
-    k = 1 - math.sqrt(1 - R)
+    k = 1 - math.sqrt(1 - R_stem)
     As_stem_req = (0.5 * fck / fy) * k * 1000 * d_stem
     
     # --- BASE SLAB DESIGN (Cantilever Moments) ---
@@ -384,53 +377,67 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
     # 1. Toe Cantilever (Critical Section at Stem Face)
     toe_len = geo.toe
     # We need the pressure at the stem face (q_sf)
-    q_sf = q_min_u + (q_max_u - q_min_u) * (toe_len / geo.B)
+    q_sf = q_min_u + (q_max_u - q_min_u) * (geo.toe / geo.B) # Corrected logic: pressure at toe end is q_max_u, pressure at stem face is q_sf
     
     # Moment from pressure (M_q)
-    M_q_toe = (q_sf * toe_len**2 / 2) + ((q_max_u - q_sf) * toe_len**2 / 6)
-    
+    # The pressure under the toe is trapezoidal, from q_sf to q_max_u
+    # Pressure at x from stem face: q(x) = q_sf + (q_max_u - q_sf) * x/toe_len
+    # Simplified calculation using trapezoidal area:
+    q_avg_toe = (q_sf + q_max_u) / 2
+    M_q_toe = q_avg_toe * toe_len**2 / 2 
+
     # Moment from toe self-weight (W_toe) (Resisting)
-    W_toe = geo.t_base * gamma_c * toe_len # kN/m
+    W_toe = geo.t_base * mat.gamma_c * toe_len # Assuming gamma_c in mat is 25.0
     M_W_toe = W_toe * toe_len / 2
     
-    # Net Factored Moment
-    Mu_toe = (M_q_toe - M_W_toe) * gamma_f_DL # Factor already applied to q and W
-    
-    k_toe = 1 - math.sqrt(1 - (4.6 * Mu_toe * 1e6) / (fck * 1000 * d_base**2))
+    # Net Factored Moment (Bottom tension)
+    Mu_toe = (M_q_toe * gamma_f_DL) - (M_W_toe * gamma_f_DL) 
+
+    # Robustness Check
+    R_toe = (4.6 * Mu_toe * 1e6) / (fck * 1000 * d_base**2)
+    if R_toe >= 1.0:
+        st.warning(f"Toe section is over-stressed (R={R_toe:.2f}). Increase base thickness or fck.")
+        R_toe = 0.999 
+
+    k_toe = 1 - math.sqrt(1 - R_toe)
     As_toe_req = (0.5 * fck / fy) * k_toe * 1000 * d_base
     
     # 2. Heel Cantilever (Critical Section at Stem Face)
     heel_len = geo.heel
-    # We need the pressure at the stem face (q_sf)
-    q_sf = q_min_u + (q_max_u - q_min_u) * (geo.toe / geo.B) # Already calculated above
-    
-    # Pressure at the heel end (q_heel)
-    q_heel = q_min_u
+    # Pressure at the stem face (q_sf) is known
+    # Pressure at the heel end (q_heel) is q_min_u
     
     # Moment from pressure (M_q)
-    # The pressure under the heel is trapezoidal
-    M_q_heel = (q_heel * heel_len**2 / 2) + ((q_sf - q_heel) * heel_len**2 / 6)
+    # Pressure under heel is trapezoidal from q_sf to q_min_u
+    q_avg_heel = (q_sf + q_min_u) / 2
+    M_q_heel = q_avg_heel * heel_len**2 / 2
     
-    # Moment from soil and surcharge (W_soil, W_surcharge) (Resisting/Stabilizing)
+    # Moments from soil, surcharge, and base self-weight (All stabilizing/top tension)
     W_soil = geo.H * soil.gamma_fill * heel_len
     W_surcharge = loads.surcharge_q * heel_len
+    W_base = geo.t_base * mat.gamma_c * heel_len
     
     M_W_soil = W_soil * heel_len / 2
     M_W_surcharge = W_surcharge * heel_len / 2
-    
-    # Moment from base self-weight (W_base) (Resisting/Stabilizing)
-    W_base = geo.t_base * gamma_c * heel_len
     M_W_base = W_base * heel_len / 2
     
-    # Net Factored Moment (Mu_heel)
-    # Heel moment = (W_soil + W_surcharge + W_base - M_q_heel) * gamma_f
-    Mu_heel = ((M_W_soil + M_W_surcharge + M_W_base) * gamma_f_DL) - (M_q_heel * gamma_f_DL)
+    M_total_resisting = (M_W_soil + M_W_surcharge + M_W_base) * gamma_f_DL
+    M_total_uplift = M_q_heel * gamma_f_DL
     
-    k_heel = 1 - math.sqrt(1 - (4.6 * Mu_heel * 1e6) / (fck * 1000 * d_base**2))
+    # Net Factored Moment (Top tension)
+    Mu_heel = M_total_resisting - M_total_uplift
+    
+    # Robustness Check
+    R_heel = (4.6 * Mu_heel * 1e6) / (fck * 1000 * d_base**2)
+    if R_heel >= 1.0:
+        st.warning(f"Heel section is over-stressed (R={R_heel:.2f}). Increase base thickness or fck.")
+        R_heel = 0.999 
+
+    k_heel = 1 - math.sqrt(1 - R_heel)
     As_heel_req = (0.5 * fck / fy) * k_heel * 1000 * d_base
     
     # Minimum Steel Area (As_min) - IS 456
-    As_min_stem = 0.12 / 100 * geo.t_stem * 1000 * 1000 # for vertical, 0.12% of gross area
+    As_min_stem = 0.12 / 100 * geo.t_stem * 1000 * 1000 
     As_min_base = 0.12 / 100 * geo.t_base * 1000 * 1000
     
     return {
