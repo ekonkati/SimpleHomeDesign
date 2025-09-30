@@ -359,7 +359,18 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
               
     # Required Steel Area (As_req)
     # As = (0.5*fck/fy) * (1 - sqrt(1 - 4.6*Mu / (fck*b*d^2))) * b*d
-    k = 1 - math.sqrt(1 - (4.6 * Mu_stem * 1e6) / (fck * 1000 * d_stem**2))
+    
+    # Calculate term inside the square root
+    R = (4.6 * Mu_stem * 1e6) / (fck * 1000 * d_stem**2)
+    
+    if R >= 1:
+        # Section is over-stressed (requires compression steel or a larger section)
+        # For simplicity, we limit R to 0.999 to get max As for singly reinforced section.
+        # This will flag the need for a larger section.
+        st.warning(f"Stem section is highly stressed (R={R:.2f}). Increase thickness or fck.")
+        R = 0.999
+        
+    k = 1 - math.sqrt(1 - R)
     As_stem_req = (0.5 * fck / fy) * k * 1000 * d_stem
     
     # --- BASE SLAB DESIGN (Cantilever Moments) ---
