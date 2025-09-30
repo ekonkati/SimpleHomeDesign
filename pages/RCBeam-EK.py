@@ -121,7 +121,7 @@ def ast_asc_doubly(Mu_kNm, Mu_lim_kNm, fck, fy, d_mm, d_prime_mm, b_mm):
     Mu_lim_Nmm = Mu_lim_kNm * 1e6
     
     k_mulim = 0.138 if fy <= 415 else 0.133
-    Ast_lim = (0.36 * fck * 0.48 * d_mm * b_mm) / (0.87 * fy) # 0.48*d_mm is xu,max for Fe500
+    Ast_lim = (0.36 * fck * 0.48 * d_mm * b_mm) / (0.87 * fy)
     
     delta_Mu_Nmm = Mu_Nmm - Mu_lim_Nmm
     
@@ -138,19 +138,15 @@ def ast_asc_doubly(Mu_kNm, Mu_lim_kNm, fck, fy, d_mm, d_prime_mm, b_mm):
 
 # ---------- JSON IMPORT/EXPORT FUNCTIONS ----------
 
-# Initialize session state for all inputs if they don't exist
-# This allows the app to maintain state during JSON load
 DEFAULT_STATE = {
     "span": 6.0, "support": "Simply Supported", "b": 300, "D": 500, "cover": 25,
     "fck": 30, "fy": 500, "t_bar_d_default": 16, "c_bar_d_default": 12,
     "finishes": 2.0, "ll": 5.0, "use_wall": False, "wall_thk": 115, "wall_h": 3.0, "wall_density": 19.0,
     "include_eq": False, "eq_coeff": 0.0, "ductile": True, 
     "action_mode": 0, "Mu_in": 120.0, "Vu_in": 180.0, "Tu_in": 0.0, "Nu_in": 0.0,
-    # Provided Reinforcement (design checks)
     "t_bar_d": 20, "t_bar_count": 3,
-    "c_bar_d": 12, "c_bar_count": 2, # Note: c_bar_d_default used here for initial sync
+    "c_bar_d": 12, "c_bar_count": 2, 
     "stirrup_d": 8, "stirrup_legs": 2, "s_v_prov": 150,
-    # Drawing table (must be synced after flexure inputs)
     "rebar_df_draw": None 
 }
 
@@ -159,10 +155,8 @@ for key, default_val in DEFAULT_STATE.items():
         st.session_state[key] = default_val
 
 def export_design_to_json():
-    # Collect all input values from session state
     export_data = {key: st.session_state[key] for key in DEFAULT_STATE.keys()}
     
-    # Handle the DataFrame specifically
     if st.session_state.rebar_df_draw is not None:
         export_data["rebar_df_draw"] = st.session_state.rebar_df_draw.to_dict('records')
     
@@ -172,7 +166,6 @@ def export_design_to_json():
 def import_design_from_json(json_file):
     try:
         data = json.load(json_file)
-        # Update session state with imported values
         for key, val in data.items():
             if key in DEFAULT_STATE:
                 if key == "rebar_df_draw" and isinstance(val, list):
@@ -180,17 +173,22 @@ def import_design_from_json(json_file):
                 else:
                     st.session_state[key] = val
         st.toast("✅ Design successfully loaded! Re-run the app to see all changes.", icon='💾')
-        st.experimental_rerun() # Rerun to update all widgets
+        # FIX: Replaced st.experimental_rerun() with st.rerun()
+        st.rerun()
     except Exception as e:
         st.error(f"❌ Error loading file: {e}")
 
 
-# ---------- UI INPUTS (GENERAL) ----------
+# ---------- MOVED SIDEBAR CONTROLS TO MAIN CANVAS ----------
 
-with st.sidebar:
-    st.header("Save/Load Design")
+st.header("0. Design Control and Settings")
+st.markdown("---")
+
+col_load, col_toggle = st.columns([1, 2])
+
+with col_load:
+    st.subheader("Save/Load Design")
     
-    # Export button
     json_export = export_design_to_json()
     st.download_button(
         "⬇️ Export Design State (JSON)",
@@ -200,7 +198,6 @@ with st.sidebar:
         help="Download the current design inputs as a JSON file."
     )
     
-    # Import uploader
     uploaded_file = st.file_uploader(
         "⬆️ Import Design State (JSON)",
         type="json",
@@ -209,15 +206,21 @@ with st.sidebar:
     )
     if uploaded_file is not None:
         import_design_from_json(uploaded_file)
-    
-    st.markdown("---")
-    st.header("Quick Toggles")
-    st.session_state.use_wall = st.checkbox("Add wall load", value=st.session_state.use_wall)
-    st.session_state.include_eq = st.checkbox("Include E/W coeff", value=st.session_state.include_eq)
-    st.session_state.eq_coeff = st.number_input("Eq. coeff (×wL²)", value=st.session_state.eq_coeff, step=0.05, disabled=not st.session_state.include_eq)
-    st.session_state.ductile = st.checkbox("Apply IS 13920 checks", value=st.session_state.ductile)
-    st.caption("⚠️ Use the 'Print' function of your browser (Ctrl+P / Cmd+P) for the final report.")
-    st.markdown("---")
+
+with col_toggle:
+    st.subheader("Quick Toggles")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.session_state.use_wall = st.checkbox("Add wall load", value=st.session_state.use_wall)
+        st.session_state.include_eq = st.checkbox("Include E/W coeff", value=st.session_state.include_eq)
+        st.session_state.ductile = st.checkbox("Apply IS 13920 checks", value=st.session_state.ductile)
+    with c2:
+        st.session_state.eq_coeff = st.number_input("Eq. coeff (×wL²)", value=st.session_state.eq_coeff, step=0.05, disabled=not st.session_state.include_eq, key="eq_coeff_input")
+    with c3:
+        st.caption("⚠️ Use the 'Print' function of your browser (Ctrl+P / Cmd+P) for the final report.")
+        
+st.markdown("---")
+# -----------------------------------------------------------
 
 
 st.header("1. Project Inputs")
@@ -339,7 +342,7 @@ col_t1, col_t2 = st.columns(2)
 with col_t1:
     st.session_state.t_bar_d = st.selectbox("Bottom Bar $\phi$ (mm)", [12, 16, 20, 25, 28, 32], index=[12, 16, 20, 25, 28, 32].index(st.session_state.t_bar_d))
 with col_t2:
-    st.session_state.t_bar_count = st.number_input("Bottom Bar Count (Total)", value=max(2, math.ceil(Ast_req / (math.pi*st.session_state.t_bar_d**2/4.0))) if not st.session_state.action_mode else st.session_state.t_bar_count, min_value=2, step=1)
+    st.session_state.t_bar_count = st.number_input("Bottom Bar Count (Total)", value=max(2, math.ceil(Ast_req / (math.pi*st.session_state.t_bar_d**2/4.0))) if st.session_state.action_mode == action_options[0] else st.session_state.t_bar_count, min_value=2, step=1)
 
 Ast_prov = (math.pi*(st.session_state.t_bar_d**2)/4.0) * st.session_state.t_bar_count 
 
@@ -364,7 +367,7 @@ if moment_type == "Doubly":
     with col_c1:
         st.session_state.c_bar_d = st.selectbox("Top Bar $\phi$ (mm)", [12, 16, 20, 25], index=[12, 16, 20, 25].index(st.session_state.c_bar_d))
     with col_c2:
-        st.session_state.c_bar_count = st.number_input("Top Bar Count (Total)", value=max(2, math.ceil(Asc_req / (math.pi*st.session_state.c_bar_d**2/4.0))) if not st.session_state.action_mode else st.session_state.c_bar_count, min_value=2, step=1)
+        st.session_state.c_bar_count = st.number_input("Top Bar Count (Total)", value=max(2, math.ceil(Asc_req / (math.pi*st.session_state.c_bar_d**2/4.0))) if st.session_state.action_mode == action_options[0] else st.session_state.c_bar_count, min_value=2, step=1)
 
     Asc_prov = (math.pi*(st.session_state.c_bar_d**2)/4.0) * st.session_state.c_bar_count 
     st.write(f"**Provided Compression Steel ($A_{{sc, prov}}$)**: **{Asc_prov:.0f}** mm² (from {st.session_state.c_bar_count} $\\times \phi{st.session_state.c_bar_d}$ bars).")
@@ -377,7 +380,7 @@ if moment_type == "Doubly":
         st.success("✅ Provided Compression Reinforcement check passed.")
 else:
     st.session_state.c_bar_d = st.session_state.c_bar_d_default
-    st.session_state.c_bar_count = 2 # Minimum two top bars for stirrups
+    st.session_state.c_bar_count = 2 
     Asc_prov = (math.pi*(st.session_state.c_bar_d**2)/4.0) * st.session_state.c_bar_count 
 
 st.subheader("2.3 Shear Design (IS 456: Cl. 40 & 41)")
@@ -415,7 +418,7 @@ with col_s3:
     control_spacing = min(s_v_req_calc, s_v_min_calc, s_v_max_abs)
     
     default_spacing = int(clamp(control_spacing, 50, s_v_max_abs))
-    st.session_state.s_v_prov = st.number_input("Provided Spacing $s_v$ (mm)", value=default_spacing if not st.session_state.action_mode else st.session_state.s_v_prov, min_value=50, step=10)
+    st.session_state.s_v_prov = st.number_input("Provided Spacing $s_v$ (mm)", value=default_spacing if st.session_state.action_mode == action_options[0] else st.session_state.s_v_prov, min_value=50, step=10)
 
 Vus_prov_kN = (0.87 * st.session_state.fy * Asv_prov * d) / (st.session_state.s_v_prov * 1e3) 
 
@@ -524,7 +527,6 @@ st.plotly_chart(fig_D, use_container_width=True)
 st.subheader("3.2 Rebar Layout and Curtailment for Drawing $\leftarrow$ Customize Here")
 st.caption("Use this table **only** to define the visual layout and curtailment. Lengths are in **meters**.")
 
-# Initialize or re-sync the drawing table with the current design inputs
 if st.session_state.rebar_df_draw is None or len(st.session_state.rebar_df_draw) == 0:
     st.session_state.rebar_df_draw = pd.DataFrame([
         {"position":"bottom","dia_mm":int(st.session_state.t_bar_d),"count":2,"start_m":0.0,"end_m":L},
