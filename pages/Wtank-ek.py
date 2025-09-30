@@ -51,7 +51,7 @@ class Loads:
     z_g_zone: int = 3   # Seismic Zone
 
 # ===============================
-# Engineering Helper Functions (Updated for Code Compliance)
+# Engineering Helper Functions
 # ===============================
 
 def triangular_resultant(gamma: float, H: float) -> Tuple[float, float]:
@@ -61,12 +61,7 @@ def triangular_resultant(gamma: float, H: float) -> Tuple[float, float]:
     return R, zbar
 
 def demand_ast_from_M(Mu_kNm: float, d_eff_mm: float, fy_MPa: float, fck_MPa: float) -> float:
-    """
-    Calculates required Ast (mm²/m) using the IS 456:2000 (Cl E-1.1) ULS limit state method 
-    for a singly reinforced section (for 1m width, b=1000mm).
-    
-    Returns: Ast in mm²/m.
-    """
+    """Calculates required Ast (mm²/m) using the IS 456:2000 (Cl E-1.1) ULS limit state method."""
     if Mu_kNm <= 0.0:
         return 0.0
     
@@ -74,11 +69,9 @@ def demand_ast_from_M(Mu_kNm: float, d_eff_mm: float, fy_MPa: float, fck_MPa: fl
     b = 1000.0  # mm
     
     try:
-        # Ast using IS 456 Annex E formula (rearranged)
         term_in_sqrt = 1.0 - (4.6 * Mu_Nmm) / (fck_MPa * b * d_eff_mm**2)
         
         if term_in_sqrt < 0:
-            # Moment exceeds Mu_lim, thickness insufficient
             return 99999.0 
             
         Ast = (0.5 * fck_MPa / fy_MPa) * (1.0 - math.sqrt(term_in_sqrt)) * b * d_eff_mm
@@ -88,20 +81,15 @@ def demand_ast_from_M(Mu_kNm: float, d_eff_mm: float, fy_MPa: float, fck_MPa: fl
         return 0.0
 
 def steel_stress_sls(Ms_kNm_per_m: float, d_eff_mm: float, As_mm2_per_m: float, Ec_MPa: float) -> float:
-    """
-    Calculates steel stress (sigma_s in MPa) using **Elastic Cracked Section Theory** for Serviceability Limit State (SLS).
-    
-    Returns: sigma_s in MPa.
-    """
+    """Calculates steel stress (sigma_s in MPa) using Elastic Cracked Section Theory (SLS)."""
     if Ms_kNm_per_m <= 0.0 or As_mm2_per_m <= 0.0:
         return 0.0
         
-    Es = 200000.0  # MPa (Young's Modulus of Steel)
+    Es = 200000.0  # MPa
     m = Es / Ec_MPa
     b = 1000.0     # 1m strip
     Ms_Nmm = Ms_kNm_per_m * KNM_TO_NMM
 
-    # 1. Find neutral axis depth, n (or x) for a cracked section:
     ratio = (m * As_mm2_per_m) / b
     
     try:
@@ -109,10 +97,7 @@ def steel_stress_sls(Ms_kNm_per_m: float, d_eff_mm: float, As_mm2_per_m: float, 
     except ValueError:
         return float('inf') 
 
-    # 2. Find lever arm, z
     z = d_eff_mm - n/3.0
-    
-    # 3. Find steel stress: sigma_s = Ms / (Ast * z)
     sigma_s = Ms_Nmm / (As_mm2_per_m * max(z, 1.0))
     
     return sigma_s
@@ -147,7 +132,6 @@ def bilinear_interpolate(ratio: float, df: pd.DataFrame, col: str) -> float:
     v1 = val[lower_idx]
     v2 = val[upper_idx]
     
-    # Linear interpolation
     C = v1 + (v2 - v1) * (ratio - lower_idx) / (upper_idx - lower_idx)
     return C
 
@@ -167,7 +151,6 @@ def export_inputs(mat: Materials, geom: Geometry, loads: Loads) -> str:
 def import_inputs(json_data: str) -> Tuple[Materials, Geometry, Loads]:
     """Deserializes JSON string into DataClass objects."""
     data = json.loads(json_data)
-    # Instantiate DataClasses safely
     mat = Materials(**data.get("Materials", {}))
     geom = Geometry(**data.get("Geometry", {}))
     loads = Loads(**data.get("Loads", {}))
@@ -192,18 +175,21 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
     x_w = [0, P_max_w, 0]
     y_w = [geom.t_base, geom.t_base, H_total]
     ax.fill(x_w, y_w, 'b', alpha=0.3, label='Water Pressure')
-    ax.plot(x_w, y_w, 'b--')
+    # CORRECTED: Use keyword arguments for clarity and to avoid the Matplotlib format error.
+    ax.plot(x_w, y_w, color='b', linestyle='--') 
     ax.text(P_max_w * 1.1, geom.t_base + geom.H/2, f'$P_w$={P_max_w:.1f} kN/m²', color='b')
     ax.arrow(P_max_w * 0.5, geom.t_base + H_total/3, 0, -0.2, head_width=0.05, head_length=0.1, fc='b', ec='b')
     ax.text(P_max_w * 0.5 + 0.1, geom.t_base + H_total/3 + 0.1, f'$R_w$={R_liq:.1f} kN/m', color='b')
 
     # 3. Earth Pressure (P_soil) - Only for Ground Tank
+    P_max_s = 0
     if geom.tank_type == "Ground":
         P_max_s = loads.gamma_s * loads.K0 * (geom.H + geom.t_base)
         x_s = [-P_max_s, 0, 0]
         y_s = [0, 0, H_total]
         ax.fill(x_s, y_s, 'brown', alpha=0.3, label='Earth Pressure')
-        ax.plot(x_s, y_s, 'brown--')
+        # CORRECTED: Using explicit color and linestyle keywords fixes the ValueError
+        ax.plot(x_s, y_s, color='brown', linestyle='--')
         ax.text(-P_max_s * 1.5, H_total/2, f'$P_s$={P_max_s:.1f} kN/m²', color='brown')
         ax.arrow(-P_max_s * 0.5, H_total/3, 0, -0.2, head_width=0.05, head_length=0.1, fc='brown', ec='brown')
         ax.text(-P_max_s * 0.5 - 0.5, H_total/3 + 0.1, f'$R_s$={R_soil:.1f} kN/m', color='brown')
@@ -237,7 +223,6 @@ def plot_results(H: float, M_base_max: float, V_base_max: float):
 
     # Bending Moment
     fig_m, ax_m = plt.subplots(figsize=(4, 6))
-    # Moment shape is not purely triangular, but a simplified shape is used for illustration
     x_m = [0, M_base_max, 0]
     y_m = [0, 0, H]
     ax_m.plot(x_m, y_m, 'b-', linewidth=2)
@@ -263,15 +248,13 @@ def plot_results(H: float, M_base_max: float, V_base_max: float):
 st.title("💧 RCC Water Tank Design and Analysis (IS 3370 / IS 456)")
 st.markdown("---")
 
-# --- INITIALIZATION (FIXED LOCATION) ---
-# Initialize session state for holding input objects, ensuring keys exist from the start.
+# --- INITIALIZATION ---
 if 'mat' not in st.session_state:
     st.session_state.mat = Materials()
     st.session_state.geom = Geometry()
     st.session_state.loads = Loads()
     st.session_state.is_imported = False
 
-# Assign local variables from session state immediately after initialization
 mat, geom, loads = st.session_state.mat, st.session_state.geom, st.session_state.loads
 
 
@@ -282,7 +265,7 @@ st.markdown("Use the controls below to **Import** or **Export** the current desi
 col_io1, col_io2 = st.columns([1, 1])
 
 # Export Button 
-export_str = export_inputs(mat, geom, loads) # Accessing using local variables which point to session_state
+export_str = export_inputs(mat, geom, loads) 
 col_io1.download_button(
     label="💾 Export Inputs (JSON)",
     data=export_str,
@@ -302,7 +285,6 @@ if uploaded_file is not None:
         json_data = uploaded_file.getvalue().decode("utf-8")
         st.session_state.mat, st.session_state.geom, st.session_state.loads = import_inputs(json_data)
         st.session_state.is_imported = True
-        # Re-assign local variables after successful import
         mat, geom, loads = st.session_state.mat, st.session_state.geom, st.session_state.loads
         st.success("Inputs imported successfully! Please review the inputs below.")
     except Exception as e:
@@ -336,7 +318,6 @@ with col3:
 # Derived geometric properties
 L_over_H = geom.L / geom.H if geom.H > 0 else 99.0
 tw_mm = geom.t_wall * M_TO_MM
-# Conservative effective depth (approx t - 50mm cover/rebar for one face)
 d_eff = tw_mm - 50.0 
 
 st.markdown("---")
@@ -433,14 +414,14 @@ st.markdown(f"The maximum ULS Design Moment ($M_u$) is $\\approx **{Mu_max_desig
 
 # 4.2 Required Steel Area (ULS Check)
 Ast_req_ULS = demand_ast_from_M(Mu_max_design, d_eff, mat.fy, mat.fck)
-Ast_min_perc = 0.35 # IS 3370 Cl 7.1 specifies 0.35% for walls > 200mm, or 0.25% for < 200mm
+Ast_min_perc = 0.35 
 if geom.t_wall < 0.20:
     Ast_min_perc = 0.25
 
 # Minimum Ast check (IS 3370 Cl 7.1)
 A_conc_total = 1000.0 * tw_mm # mm²/m
-Ast_min_total = (Ast_min_perc / 100.0) * A_conc_total # Total Ast (both faces)
-Ast_min_face = Ast_min_total / 2.0 # Minimum Ast per face, assumed split equally
+Ast_min_total = (Ast_min_perc / 100.0) * A_conc_total 
+Ast_min_face = Ast_min_total / 2.0 
 
 Ast_req_final = max(Ast_req_ULS, Ast_min_face)
 
@@ -459,12 +440,11 @@ st.header("5. Serviceability Limit State (SLS) - Crack Control")
 st.markdown("Per **IS 3370-2 (Cl 3.1)**, the steel stress ($\sigma_s$) under unfactored service loads must be limited to prevent cracking, ensuring water-tightness. We use **Elastic Cracked Section Analysis** to find the actual stress.")
 
 # Permissible Steel Stress (IS 3370-2, Table 3 - For w_lim=0.2mm, Fe415)
-sigma_allow = 130.0 # MPa (for bars <= 16mm) or 100 MPa (for bars > 16mm) - Assuming 16mm bars for this check
+sigma_allow = 130.0 
 
-# Provided Ast for Check: Use the calculated required Ast, but limit it for bar size assumption
 Ast_prov_mm2 = Ast_req_final
 if Ast_req_final > 1340: # M16 @ 150 c/c = 1340 mm2/m
-    sigma_allow = 100.0 # Reduce allowance if Ast is very high, suggesting larger bars might be needed.
+    sigma_allow = 100.0 
 
 # Service Moment (Unfactored)
 Ms_design = M_base_corner_FL 
@@ -476,9 +456,7 @@ st.subheader("5.1 Stress Check for Water-Tightness")
 st.markdown(f"""
 - **Service Moment ($M_s$)** (Unfactored FL): **{Ms_design:.2f} $\text{{kNm/m}}$**
 - **Provided $A_{{st}}$** (Used for Check): **{Ast_prov_mm2:.0f} $\text{{mm}}^2/\text{{m}}$**
-- **Permissible $\sigma_{{s, allow}}$** (IS 3370-2): **{sigma_allow:.0f} $\text{{MPa}}$** (Assuming max bar dia $\le 16 \text{{ mm}}$)
-
-**Calculated $\sigma_{{s, actual}}$ = {sigma_s_actual:.0f} $\text{{MPa}}$**
+- **Permissible $\sigma_{{s, allow}}$** (IS 3370-2): **{sigma_allow:.0f} $\text{{MPa}}$** **Calculated $\sigma_{{s, actual}}$ = {sigma_s_actual:.0f} $\text{{MPa}}$**
 
 **Result: $\sigma_{{s, actual}}$ {'≤' if sigma_s_actual <= sigma_allow else '>'} $\sigma_{{s, allow}}$ $\rightarrow$ **{'**✅ PASS** (Crack width controlled)' if sigma_s_actual <= sigma_allow else '**❌ FAIL** (Increase $t_{{w}}$ or $A_{{st}}$)'}**
 """)
@@ -494,14 +472,14 @@ plot_results(geom.H, Mu_max_design / gamma_f_FL, V_base_FL)
 
 st.subheader("6.2 Rebar Reduction and Curtailment Suggestions")
 st.markdown(f"""
-For a wall height $H = {geom.H:.1f} \text{{ m}}$, the vertical bending moment is maximum at the base and zero at the top. The required steel area $A_{{st}}$ decreases rapidly away from the base.
+For a wall height $H = {geom.H:.1f} \text{{ m}}$, the vertical bending moment is maximum at the base and zero at the top.
 
-1.  **Curtailment Point:** The moment reduction means that the main tension reinforcement (designed for $M_u$) can be reduced or cut off where the moment $M(z)$ requires an $A_{{st}} < A_{{st, prov, upper}}$. A common practice is to allow a reduction in $A_{{st}}$ at a height of **$0.3H$ to $0.4H$** from the base, provided the remaining steel satisfies $A_{{st, min}}$ and sufficient development length ($L_d$) is provided beyond the theoretical cut-off point.
-    * *Suggestion:* Consider curtailing **half of the main bars** at approximately **$0.4 \times {geom.H} \approx {0.4*geom.H:.2f} \text{{ m}}$** from the base.
+1.  **Curtailment Point:** The main tension reinforcement (designed for $M_u$) can be reduced or cut off where the moment $M(z)$ requires an $A_{{st}} < A_{{st, prov, upper}}$.
+    * *Suggestion:* Consider curtailing **half of the main bars** at approximately **$0.4 \times {geom.H} \approx {0.4*geom.H:.2f} \text{{ m}}$** from the base, ensuring adequate development length ($L_d$).
 
-2.  **Upper Zone Steel:** The top portion of the wall (e.g., above $0.6H$) is primarily subjected to $A_{{st, min}}$ due to temperature and shrinkage effects. The minimum steel **$A_{{st, min, face}} = {Ast_min_face:.0f} \text{{ mm}}^2/\text{{m}}$** should be maintained vertically and horizontally on both faces throughout this region.
+2.  **Upper Zone Steel:** The top portion (e.g., above $0.6H$) should maintain the minimum steel **$A_{{st, min, face}} = {Ast_min_face:.0f} \text{{ mm}}^2/\text{{m}}$** (vertically and horizontally on both faces) to control temperature and shrinkage cracks.
 
-3.  **Horizontal Steel:** Horizontal steel is crucial for resisting hoop tension (at the base for plate action) and controlling temperature/shrinkage cracks. It should not be curtailed based on the vertical moment diagram; it should generally be held at **$A_{{st, min}}$ or greater** across the entire wall height and faces.
+3.  **Horizontal Steel:** Horizontal reinforcement should typically be held at **$A_{{st, min}}$ or greater** across the entire wall height and faces to resist plate action moments and shrinkage.
 """)
 
 st.markdown("---")
@@ -520,5 +498,3 @@ data = {
     "Result": ["-", "-", "-", "-", "-", "-", "SLS " + ('PASS' if sigma_s_actual <= sigma_allow else 'FAIL')]
 }
 st.table(pd.DataFrame(data))
-
-# End of code
