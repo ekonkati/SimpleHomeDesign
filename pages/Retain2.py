@@ -3,8 +3,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict
 from datetime import datetime
-import json # ADDED for saving/loading state
-
+import json
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -39,23 +38,24 @@ def as_per_m(dia_mm: int, spacing_mm: int) -> float:
 # NEW FUNCTION: Create a serializable state dictionary for saving
 def create_state_dict(geo, soil, loads, mat, bearing, project_name, wall_type, design_state):
     """Creates a dictionary of all current inputs for saving."""
-    # Note: geo.B is derived and not in the dataclass until calculated
     geo_dict = geo.__dict__.copy()
     if 'B' in geo_dict:
         del geo_dict['B'] 
-
+    
+    # Store widget values from session state to ensure latest are saved
     return {
-        'project_name': project_name,
-        'wall_type': wall_type,
-        'design_state': design_state,
+        'project_name': st.session_state['project_name'],
+        'wall_type': st.session_state['wall_type'],
+        'design_state': st.session_state['design_state'],
         'geo': geo_dict,
         'soil': soil.__dict__,
         'loads': loads.__dict__,
         'mat': mat.__dict__,
         'bearing': bearing.__dict__,
-        'version': 1.1, # Updated version
+        'version': 1.2, # Updated version
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
+
 # ------------------------- Dataclasses ------------------------- #
 
 @dataclass
@@ -120,22 +120,20 @@ def calc_K(phi: float, state: str, loads: Loads) -> Dict[str, float]:
         Kp = (1 + math.sin(phi_rad)) / (1 - math.sin(phi_rad))
         delta = math.radians(phi / 2) 
    
-        # Calculate KaE (Seismic Active Earth Pressure Coefficient)
         if loads.seismic_kh > 0:
             psi = math.radians(math.atan(loads.seismic_kh / (1-loads.seismic_kv)))
             num = (math.cos(phi_rad-psi)**2)
             den = (math.cos(psi)**2) * math.cos(psi+delta) * (1 + math.sqrt(math.sin(phi_rad+delta) * math.sin(phi_rad-psi) / (math.cos(psi+delta))))**2
             KaE = num/den
- 
         else:
             KaE = Ka
             
-        return {'Ka': KaE, 'Kp': Kp, 'delta': delta, 'KaE': KaE} # ADDED 'KaE' back to dict for pressures
+        return {'Ka': KaE, 'Kp': Kp, 'delta': delta, 'KaE': KaE}
     else:
         return {'Ka': 0.0, 'Kp': 0.0, 'delta': 0.0}
 
 def pressures(H: float, soil: Soil, loads: Loads, design_state: str) -> Dict[str, float]:
-    """Calculates earth and water pressures."""
+    """Calculates earth and water pressures (UNFACTORED)."""
     
     K = calc_K(soil.phi, design_state, loads) 
     Ka = K['Ka']
@@ -167,23 +165,15 @@ def pressures(H: float, soil: Soil, loads: Loads, design_state: str) -> Dict[str
     y_seismic = 0.0
     p0_seismic = 0.0
     
-    # Correction for MO: if seismic, overwrite static earth pressure components
     if loads.use_seismic and design_state == 'Seismic (Mononobe-Okabe)':
         KaE = K['KaE']
         
         P_static = 0.5 * Ka * soil.gamma_fill * H**2
         P_total_seismic = 0.5 * KaE * soil.gamma_fill * H**2
         
-        # Total lateral Earth force
         P_earth = P_total_seismic 
-        
-        # Dynamic increment for stability check (for FOS_OT numerator)
         P_dynamic = P_total_seismic - P_static 
-        
-        # Center of total force application
         y_earth = H / 3 
-        
-        # Center of dynamic force application
         y_seismic = 0.6 * H 
         
     return {
@@ -194,16 +184,15 @@ def pressures(H: float, soil: Soil, loads: Loads, design_state: str) -> Dict[str
         'P_seismic': P_dynamic, 'y_seismic': y_seismic, 'p0_seismic': p0_seismic,
     }
 
-def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: Dict[str, float]) -> Dict[str, float]:
-    """Performs global stability checks (SLS)."""
-    
+# NEW: Function to calculate vertical weights (UNFACTORED)
+def calculate_vertical_weights(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float]) -> Dict[str, float]:
+    """Calculates all vertical forces (weights and uplift, UNFACTORED)."""
     gamma_c = 25.0 
     
     # W1: Stem
     W1 = geo.t_stem * (geo.H + geo.t_base) * gamma_c
     x1 = geo.toe + geo.t_stem / 2
     
-  
     # W2: Base
     W2 = geo.B * geo.t_base * gamma_c
     x2 = geo.B / 2
@@ -212,206 +201,250 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
     W3 = geo.heel * geo.H * soil.gamma_fill
     x3 = geo.toe + geo.t_stem + geo.heel / 2
     
-    # W4: Surcharge over heel
+    # W4: Surcharge over heel (LL)
     W4 = loads.surcharge_q * geo.heel
     x4 = geo.toe + geo.t_stem + geo.heel / 2
     
-    # W5: Water uplift
- 
+    # W5: Water uplift (DL)
     gwl = loads.gwl_h_from_base
     if gwl > 0:
         p_uplift_base = GAMMA_W * gwl
         W5_uplift = 0.5 * p_uplift_base * geo.B 
-        # Uplift force location is at 1/3 base length from max pressure (heel side)
-        x5_uplift = geo.toe + geo.t_stem + geo.heel * (2/3) # Corrected x-location for triangular uplift
+        x5_uplift = geo.toe + geo.t_stem + geo.heel * (2/3) 
     else:
         W5_uplift = 0.0
         x5_uplift = 0.0
         
-    # Total Vertical Force (V)
-    V_total = W1 + W2 + W3 + W4 - W5_uplift
+    # W_V_earth: Vertical component of Earth Pressure (DL)
+    P_V_earth = pres['P_earth'] * math.sin(math.radians(pres['delta']))
+    x_V_earth = geo.toe + geo.t_stem
     
-    # Overturning Moments (Mo) - wrt toe (x=0)
-    # The resultant of the horizontal earth pressure component
-    P_H_earth = pres['P_earth'] * math.cos(math.radians(pres['delta']))
-    P_V_earth = pres['P_earth'] * math.sin(math.radians(pres['delta'])) # Vertical component (stabilizing)
+    # Grouping weights by type for load combinations
+    W_DL = W1 + W2 + W3 + P_V_earth
+    M_DL = (W1 * x1) + (W2 * x2) + (W3 * x3) + (P_V_earth * x_V_earth)
     
-    P_H_surcharge = pres['P_surcharge'] 
+    W_LL = W4
+    M_LL = W4 * x4
     
-    # Total Horizontal Force (for Sliding)
-    P_H = P_H_earth + P_H_surcharge + pres['P_water'] + pres['P_seismic']
+    W_UPLIFT = W5_uplift
+    M_UPLIFT = W5_uplift * x5_uplift
     
-    # Add stabilizing moment from P_V_earth
-    Mr_V_earth = P_V_earth * (geo.toe + geo.t_stem)
-    V_total += P_V_earth # Add vertical component to V_total
-    
-    Mo = (P_H_earth * pres['y_earth']) + \
-         (P_H_surcharge * pres['y_surcharge']) + \
-         (pres['P_water'] * pres['y_water']) + \
-         (pres['P_seismic'] * pres['y_seismic'])
-         
-    # Resisting Moments (Mr) - wrt toe (x=0)
-    Mr = (W1 * x1) + (W2 * x2) + (W3 * x3) + (W4 * x4) - (W5_uplift * x5_uplift) + Mr_V_earth
-    
-    # ------------------ Stability Checks ------------------
-    
-    # 1. Overturning (FOS_OT)
-    FOS_OT = Mr / Mo if Mo != 0 else 99.0
-        
-    # 2. Sliding (FOS_SL)
-    Kp = calc_K(soil.phi, 'Active', loads)['Kp'] 
-    Dp = geo.Df 
-    
-    if geo.shear_key_depth > 0:
-       
-        Dp = geo.Df + geo.shear_key_depth
-        
-    Pp = 0.5 * Kp * soil.gamma * Dp**2 
-    
-    if bearing.include_passive:
-        Pp_allow = Pp * bearing.passive_reduction
-    else:
-        Pp_allow = 0.0
-        
-    F_cohesion = soil.c_base * geo.B
-    F_friction = V_total * bearing.mu_base
-    
-    Fr = F_friction + Pp_allow + F_cohesion
- 
-    
-    FOS_SL = Fr / P_H if P_H != 0 else 99.0
-        
-    # 3. Bearing Pressure (q_max/q_min)
-    
-    x_res = Mr / V_total
-    e = x_res - geo.B / 2
-    
-    if abs(e) <= geo.B / 6:
-        q_avg = V_total / geo.B
-        q_max = q_avg * (1 + 6 * abs(e) / geo.B)
-  
-        q_min = q_avg * (1 - 6 * abs(e) / geo.B)
-    else:
-        a = geo.B / 2 - e
-        if a < 0 or V_total < 0: 
-             q_max = 9999.0 
-             q_min = 9999.0
-        else:
-           
-            q_max = 2 * V_total / (3 * abs(a))
-            q_min = 0.0
-            
     return {
-        'H': P_H, 'V': V_total, 'M_o': Mo, 'M_r': Mr, 
-        'FOS_OT': FOS_OT, 'FOS_SL': FOS_SL, 
-        'Pp_allow': Pp_allow, 'F_friction': F_friction, 'F_cohesion': F_cohesion,
-        'e': e, 'x_res': x_res, 'q_avg': V_total / geo.B, 'q_max': q_max, 'q_min': q_min,
-        'SBC_allow': bearing.SBC_allow 
+        'W1': W1, 'x1': x1, 'W2': W2, 'x2': x2, 'W3': W3, 'x3': x3, 'W4': W4, 'x4': x4, 
+        'W5_uplift': W5_uplift, 'x5_uplift': x5_uplift, 'P_V_earth': P_V_earth, 
+        'W_DL': W_DL, 'M_DL': M_DL, 'W_LL': W_LL, 'M_LL': M_LL, 'W_UPLIFT': W_UPLIFT, 'M_UPLIFT': M_UPLIFT
     }
 
-def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float], mat: Materials) -> Dict[str, float]:
+def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: Dict[str, float]) -> Dict[str, float]:
+    """Performs global stability checks (SLS) and finds worst-case ULS bearing pressure."""
+    
+    # --- IS 456 ULS Load Combinations (Simplified for Retaining Walls) ---
+    # Case 1: Max Overturning/Max Bearing (Factor on stabilizing DL = 1.5)
+    # Case 2: Min Resisting/Max Uplift (Factor on stabilizing DL = 0.9)
+    # Lateral Loads (Earth, Water, Surcharge) always factored by 1.5.
+
+    gamma_H = 1.5 # Factor for lateral (overturning) loads
+    gamma_V_max = 1.5 # Factor for maximum vertical (resisting) loads
+    gamma_V_min = 0.9 # Factor for minimum vertical (resisting) loads
+    
+    W_unfactored = calculate_vertical_weights(geo, soil, loads, pres)
+
+    # ------------------ Lateral Forces (Common to both cases) ------------------
+    P_H_earth = pres['P_earth'] * math.cos(math.radians(pres['delta']))
+    P_H_surcharge = pres['P_surcharge'] 
+    
+    P_H_total = P_H_earth + P_H_surcharge + pres['P_water'] + pres['P_seismic']
+    
+    Mo_unfactored = (P_H_earth * pres['y_earth']) + \
+                    (P_H_surcharge * pres['y_surcharge']) + \
+                    (pres['P_water'] * pres['y_water']) + \
+                    (pres['P_seismic'] * pres['y_seismic'])
+    
+    # ULS Overturning Moment (Mo)
+    Mo_uls = Mo_unfactored * gamma_H
+    
+    # ULS Horizontal Force (H)
+    H_uls = P_H_total * gamma_H
+
+    # ------------------ Case 1: Max Resisting Vertical Load (ULS 1.5) ------------------
+    V1_uls = (W_unfactored['W_DL'] * gamma_V_max) + (W_unfactored['W_LL'] * gamma_H) - (W_unfactored['W_UPLIFT'] * gamma_V_max)
+    Mr1_uls = (W_unfactored['M_DL'] * gamma_V_max) + (W_unfactored['M_LL'] * gamma_H) - (W_unfactored['M_UPLIFT'] * gamma_V_max)
+    
+    # Case 2: Min Resisting Vertical Load (ULS 0.9)
+    V2_uls = (W_unfactored['W_DL'] * gamma_V_min) + (W_unfactored['W_LL'] * gamma_H) - (W_unfactored['W_UPLIFT'] * gamma_V_min)
+    Mr2_uls = (W_unfactored['M_DL'] * gamma_V_min) + (W_unfactored['M_LL'] * gamma_H) - (W_unfactored['M_UPLIFT'] * gamma_V_min)
+
+    # ------------------ Stability Checks (SLS - Unfactored Loads) ------------------
+    V_sls = W_unfactored['W_DL'] + W_unfactored['W_LL'] - W_unfactored['W_UPLIFT']
+    Mr_sls = W_unfactored['M_DL'] + W_unfactored['M_LL'] - W_unfactored['M_UPLIFT']
+    Mo_sls = Mo_unfactored
+    
+    # 1. Overturning (FOS_OT) - SLS Check
+    FOS_OT = Mr_sls / Mo_sls if Mo_sls != 0 else 99.0
+        
+    # 2. Sliding (FOS_SL) - SLS Check
+    Kp = calc_K(soil.phi, 'Active', loads)['Kp'] 
+    Dp = geo.Df + geo.shear_key_depth
+    Pp = 0.5 * Kp * soil.gamma * Dp**2 
+    
+    Pp_allow = Pp * bearing.passive_reduction if bearing.include_passive else 0.0
+        
+    F_cohesion = soil.c_base * geo.B
+    F_friction = V_sls * bearing.mu_base # Use SLS Vertical Load
+    
+    Fr_sls = F_friction + Pp_allow + F_cohesion
+    FOS_SL = Fr_sls / P_H_total if P_H_total != 0 else 99.0
+        
+    # 3. Bearing Pressure (q_max/q_min) - ULS Check for Max Pressure
+    
+    # Check both ULS cases for worst bearing pressure (q_max)
+    
+    # Case 1: Max V (V1_uls, Mr1_uls) -> Max q_max
+    x_res1 = Mr1_uls / V1_uls
+    e1 = x_res1 - geo.B / 2
+    
+    if abs(e1) <= geo.B / 6:
+        q_max1 = (V1_uls / geo.B) * (1 + 6 * abs(e1) / geo.B)
+        q_min1 = (V1_uls / geo.B) * (1 - 6 * abs(e1) / geo.B)
+    else:
+        a = geo.B / 2 - e1
+        if a < 0 or V1_uls < 0: 
+             q_max1 = 9999.0 
+             q_min1 = 9999.0
+        else:
+            q_max1 = 2 * V1_uls / (3 * abs(a))
+            q_min1 = 0.0
+            
+    # Case 2: Min V (V2_uls, Mr2_uls) -> Possibly lower q_max, higher uplift/tension
+    x_res2 = Mr2_uls / V2_uls
+    e2 = x_res2 - geo.B / 2
+
+    if abs(e2) <= geo.B / 6:
+        q_max2 = (V2_uls / geo.B) * (1 + 6 * abs(e2) / geo.B)
+        q_min2 = (V2_uls / geo.B) * (1 - 6 * abs(e2) / geo.B)
+    else:
+        a = geo.B / 2 - e2
+        if a < 0 or V2_uls < 0: 
+             q_max2 = 9999.0 
+             q_min2 = 9999.0
+        else:
+            q_max2 = 2 * V2_uls / (3 * abs(a))
+            q_min2 = 0.0
+            
+    # Use the max q_max from the two ULS cases for design check
+    q_max = max(q_max1, q_max2)
+    q_min = min(q_min1, q_min2)
+    
+    # Resultant position and eccentricity for the worst-case q_max
+    x_res_final = x_res1 if q_max1 >= q_max2 else x_res2
+    e_final = e1 if q_max1 >= q_max2 else e2
+    V_final = V1_uls if q_max1 >= q_max2 else V2_uls
+            
+    return {
+        'H_sls': P_H_total, 'V_sls': V_sls, 'M_o_sls': Mo_sls, 'M_r_sls': Mr_sls, 
+        'FOS_OT': FOS_OT, 'FOS_SL': FOS_SL, 
+        'Pp_allow': Pp_allow, 'F_friction': F_friction, 'F_cohesion': F_cohesion,
+        'e': e_final, 'x_res': x_res_final, 'q_avg': V_final / geo.B, 'q_max': q_max, 'q_min': q_min,
+        'SBC_allow': bearing.SBC_allow,
+        'V_uls1': V1_uls, 'Mr_uls1': Mr1_uls, 'q_max1': q_max1,
+        'V_uls2': V2_uls, 'Mr_uls2': Mr2_uls, 'q_max2': q_max2,
+        'Mo_uls': Mo_uls, 'H_uls': H_uls
+    }
+
+def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float], mat: Materials, stab: Dict[str, float]) -> Dict[str, float]:
     """Calculates reinforcement area (ULS)."""
     
-    gamma_f_DL = 1.5
-    gamma_f_LL = 1.5
+    # Load Factors for ULS Design of Components (Moment must be max, load must be min)
+    gamma_H = 1.5 # Lateral
+    gamma_V_max = 1.5 # Downward for Max Toe Moment
+    gamma_V_min = 0.9 # Downward for Max Heel Moment
     
     fck = mat.fck
     fy = mat.fy
-    
-    # --- STEM DESIGN ---
+    W_unfactored = calculate_vertical_weights(geo, soil, loads, pres)
+
     # Assume 12mm bar for effective depth calculation 
     d_stem = geo.t_stem * 1000 - mat.cover - 12 
+    d_base = geo.t_base * 1000 - mat.cover - 12 
     
-    # Unfactored forces at base of stem
-    P_earth_u = pres['P_earth'] * gamma_f_DL
-    P_surcharge_u = pres['P_surcharge'] * gamma_f_LL
-    P_water_u = pres['P_water'] * gamma_f_DL
-    P_seismic_u = pres['P_seismic'] * gamma_f_DL 
+    # --- STEM DESIGN ---
+    # Factored forces at base of stem (lateral loads only, always max)
+    P_earth_u = pres['P_earth'] * gamma_H
+    P_surcharge_u = pres['P_surcharge'] * gamma_H
+    P_water_u = pres['P_water'] * gamma_H
+    P_seismic_u = pres['P_seismic'] * gamma_H
     
     Mu_stem = (P_earth_u * pres['y_earth']) + \
               (P_surcharge_u * pres['y_surcharge']) + \
               (P_water_u * pres['y_water']) + \
               (P_seismic_u * pres['y_seismic'])
      
-    # R_stem calculation (simplified from IS 456 - Cl. G 1.1)
-    # R_stem = (Mu * 1e6) / (b * d^2) -> k_lim ~ 0.138 fck for Fe 415. Use 0.138.
-    # Mu/bd^2 = 4.6 * Mu / (fck * 1000 * d^2) if using 0.138 fck
     R_stem = (4.6 * Mu_stem * 1e6) / (fck * 1000 * d_stem**2)
-    
-    if R_stem >= 1.0:
-        st.warning(f"Stem is over-stressed (R={R_stem:.2f}). Increase stem thickness or fck.")
-        R_stem = 0.999 
-        
-    k = 1 - math.sqrt(1 - R_stem)
-    As_stem_req = (0.5 * fck / fy) * k * 1000 * d_stem
+    if R_stem >= 1.0: R_stem = 0.999 
+    k_stem = 1 - math.sqrt(1 - R_stem)
+    As_stem_req = (0.5 * fck / fy) * k_stem * 1000 * d_stem
     
     # --- BASE SLAB DESIGN ---
     
-    q_max_u = pres['q_max'] * gamma_f_DL
-    q_min_u = pres['q_min'] * gamma_f_DL
+    # Use max q_max from stability check for toe uplift/moment
+    q_max_u = stab['q_max']
+    q_min_u = stab['q_min']
     
-    # Assume 12mm bar for effective depth calculation 
-    d_base = geo.t_base * 1000 - mat.cover - 12 
- 
-    
-    # 1. Toe Cantilever
+    # 1. Toe Cantilever (Design for Max q_max - ULS 1.5 or 0.9 from stability check)
     toe_len = geo.toe
-    # Interpolate pressure at stem-toe junction
-    q_sf = q_min_u + (q_max_u - q_min_u) * (geo.toe / geo.B) 
-    q_avg_toe = (q_sf + q_max_u) / 2
+    # Interpolate pressure at stem-toe junction using the worst-case pressure distribution
+    q_sf_toe = q_min_u + (q_max_u - q_min_u) * (geo.toe / geo.B) 
+    q_avg_toe = (q_sf_toe + q_max_u) / 2
     M_q_toe = q_avg_toe * toe_len**2 / 2 
 
     # Unfactored self-weight of toe
-    W_toe = geo.t_base * mat.gamma_c * toe_len 
+    W_toe = W_unfactored['W2'] * (geo.toe / geo.B) 
     M_W_toe = W_toe * toe_len / 2
     
-    Mu_toe = (M_q_toe * gamma_f_DL) - (M_W_toe * gamma_f_DL) 
-
+    # Toe moment is maximized by ULS Case 1 (Max Downward on Concrete, Max Uplift q_max)
+    # The moment from the base pressure M_q_toe already includes all load factors
+    Mu_toe = M_q_toe - (M_W_toe * gamma_V_min) # Use 0.9 factor on self-weight to be conservative
+ 
     R_toe = (4.6 * Mu_toe * 1e6) / (fck * 1000 * d_base**2)
-    if R_toe >= 1.0:
-        st.warning(f"Toe section is over-stressed (R={R_toe:.2f}). Increase base thickness or fck.")
-        R_toe = 0.999 
-
+    if R_toe >= 1.0: R_toe = 0.999 
     k_toe = 1 - math.sqrt(1 - R_toe)
     As_toe_req = (0.5 * fck / fy) * k_toe * 1000 * d_base
     
-    # 2. Heel Cantilever 
-    heel_len = geo.heel
-    # Interpolate pressure at stem-heel junction (q_sf is pressure at stem face)
-    # The pressure distribution over the heel is trapezoidal from q_min at heel end to q_sf at stem face.
+    # 2. Heel Cantilever (Design for Max Downward Load - ULS 1.5)
     
-    q_at_heel_end = q_min_u
-    q_at_stem_face = q_min_u + (q_max_u - q_min_u) * ((geo.toe + geo.t_stem) / geo.B)
+    # Downward Loads (Factored by 1.5)
+    W_soil_u = W_unfactored['W3'] * gamma_V_max
+    W_surcharge_u = W_unfactored['W4'] * gamma_H
+    W_base_u = W_unfactored['W2'] * (geo.heel / geo.B) * gamma_V_max # Base weight under heel
+    
+    M_W_soil = (W_unfactored['W3'] * (geo.heel / 2)) * gamma_V_max
+    M_W_surcharge = (W_unfactored['W4'] * (geo.heel / 2)) * gamma_H
+    M_W_base = ((W_unfactored['W2'] * (geo.heel / geo.B)) * (geo.heel / 2)) * gamma_V_max
+    
+    M_total_resisting = M_W_soil + M_W_surcharge + M_W_base
+    
+    # Uplift Load (Minimum Uplift Pressure - ULS 0.9)
+    q_max_heel = stab['q_max1'] # Max Downward Check - Max V (ULS 1.5)
+    q_min_heel = stab['q_min1']
+    
+    q_at_heel_end = q_min_heel
+    q_at_stem_face = q_min_heel + (q_max_heel - q_min_heel) * ((geo.toe + geo.t_stem) / geo.B)
 
     # Force 1: Rectangular component
-    P_rect = q_at_heel_end * heel_len
-    M_rect = P_rect * heel_len / 2
+    P_rect = q_at_heel_end * geo.heel
+    M_rect = P_rect * geo.heel / 2
 
-    # Force 2: Triangular component (pressure at heel end is q_min_u)
+    # Force 2: Triangular component
     delta_q = q_at_stem_face - q_at_heel_end
-    P_tri = 0.5 * delta_q * heel_len
-    M_tri = P_tri * heel_len / 3
+    P_tri = 0.5 * delta_q * geo.heel
+    M_tri = P_tri * geo.heel / 3
     
-    M_q_heel_uplift = (M_rect + M_tri) * gamma_f_DL
-    
-    # Resisting Downward Loads (Unfactored)
-    W_soil = geo.H * soil.gamma_fill * heel_len
-    W_surcharge = loads.surcharge_q * heel_len
-    W_base = geo.t_base * mat.gamma_c * heel_len
-    
-    M_W_soil = W_soil * heel_len / 2
-    M_W_surcharge = W_surcharge * heel_len / 2
-    M_W_base = W_base * heel_len / 2
-    
-    M_total_resisting = (M_W_soil + M_W_surcharge + M_W_base) * gamma_f_DL
+    M_q_heel_uplift = M_rect + M_tri
     
     Mu_heel = M_total_resisting - M_q_heel_uplift
     
     R_heel = (4.6 * Mu_heel * 1e6) / (fck * 1000 * d_base**2)
-    if R_heel >= 1.0:
-        st.warning(f"Heel section is over-stressed (R={R_heel:.2f}). Increase base thickness or fck.")
-        R_heel = 0.999 
-
+    if R_heel >= 1.0: R_heel = 0.999 
     k_heel = 1 - math.sqrt(1 - R_heel)
     As_heel_req = (0.5 * fck / fy) * k_heel * 1000 * d_base
     
@@ -427,6 +460,7 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
 
 # ------------------------- Drawings (Matplotlib) ------------------------- #
 
+# (No changes to plotting functions: plot_wall_section, plot_pressure_diagram, plot_load_resultants, make_boq)
 def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bearing: Bearing, show_rebar=True):
     """
     Plots the wall section geometry, reinforcement schematic, and bearing pressure.
@@ -476,7 +510,8 @@ def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bea
         y_max = base_y - q_max * pressure_scale
         y_min = base_y - q_min * pressure_scale
 
-        if abs(stab['e']) <= B / 6:
+        e = stab['e']
+        if abs(e) <= B / 6:
       
             X_press = [0, B, B, 0]
             Y_press = [y_max, y_min, base_y, base_y]
@@ -544,7 +579,7 @@ def plot_pressure_diagram(H: float, p_earth: float, p_surcharge: float, p_water:
         ax.fill_betweenx(Y_w, [0, p_water], color='cyan', alpha=0.3, label='Water')
         ax.text(p_water, H, f'{p_water:.2f} kPa', va='bottom', ha='right', bbox=dict(facecolor='white', alpha=0.7))
         
-    ax.set_title('Lateral Pressure Distribution')
+    ax.set_title('Lateral Pressure Distribution (Unfactored)')
     ax.set_xlabel('Pressure (kPa)')
     ax.set_ylabel('Depth from Top of Stem (m)')
     ax.invert_yaxis() 
@@ -563,7 +598,7 @@ def plot_load_resultants(P_earth, P_surcharge, P_water):
     names = list(forces.keys())
     values = list(forces.values())
     ax.barh(names, values, color=['yellow', 'blue', 'cyan'])
-    ax.set_title('Resultant Lateral Forces (kN/m)')
+    ax.set_title('Resultant Lateral Forces (kN/m, Unfactored)')
     ax.set_xlabel('Force (kN/m)')
     ax.grid(axis='x', linestyle=':', alpha=0.6)
     for i, v in enumerate(values):
@@ -595,7 +630,7 @@ st.title('Retaining Wall Design Wizard')
 st.header('Design Inputs and Calculations (Single Page) 📝')
 
 # --- Initial State/Default Values ---
-# Function to load state from JSON
+# Function to load state from JSON (USED FOR FILE UPLOAD)
 def load_state_from_dict(data):
     st.session_state['project_name'] = data.get('project_name', 'RW-01')
     st.session_state['wall_type'] = data.get('wall_type', 'Cantilever T-Wall')
@@ -634,6 +669,8 @@ def load_state_from_dict(data):
         include_passive=bearing_data.get('include_passive', True), 
         passive_reduction=bearing_data.get('passive_reduction', 0.66)
     )
+    st.success(f"Design '{st.session_state['project_name']}' loaded successfully.")
+    # Rerunning the script after updating all state variables
     st.rerun()
 
 # Check for initial state or load state
@@ -662,8 +699,7 @@ with st.sidebar:
         try:
             bytes_data = uploaded_file.getvalue()
             data = json.loads(bytes_data.decode("utf-8"))
-            load_state_from_dict(data)
-            st.success(f"Design '{data.get('project_name')}' loaded successfully.")
+            load_state_from_dict(data) # This function calls st.rerun() on success
         except Exception as e:
             st.error(f"Error loading file: {e}")
     st.markdown("---")
@@ -746,8 +782,8 @@ with st.expander('3. Soil, Loads, and Materials', expanded=False):
 # These functions run on every Streamlit rerun, capturing the latest inputs.
 pres = pressures(geo.H, soil, loads, design_state)
 stab = stability(geo, soil, loads, bearing, pres)
-pres.update({'q_avg': stab['q_avg'], 'q_max': stab['q_max'], 'q_min': stab['q_min']})
-desg = member_design(geo, soil, loads, pres, mat)
+# Note: pres and stab are now calculated using IS 456 ULS load combinations
+desg = member_design(geo, soil, loads, pres, mat, stab)
 
 # ------------------------- Sequential Output Display (Main Page) ------------------------- #
 
@@ -758,12 +794,12 @@ st.subheader('4. Results and Diagrams')
 with st.expander('4.1 Geometry and Pressure Diagrams', expanded=True):
     col_draw, col_press = st.columns([2, 1])
     with col_draw:
-        st.subheader('Wall Section, Reinforcement, and Base Pressure')
+        st.subheader('Wall Section, Reinforcement, and Base Pressure (ULS Max)')
         plot_wall_section(geo, mat, stab, bearing) 
     with col_press:
         st.subheader('Lateral Pressure Distribution')
         plot_pressure_diagram(geo.H, pres['p0_earth'], pres['p_surcharge'], pres['p0_water'], loads.gwl_h_from_base)
-        st.subheader('Resultant Forces')
+        st.subheader('Resultant Forces (Unfactored)')
         plot_load_resultants(pres['P_earth'], pres['P_surcharge'], pres['P_water'])
 
 
@@ -771,38 +807,32 @@ with st.expander('4.1 Geometry and Pressure Diagrams', expanded=True):
 st.divider()
 with st.expander('4.2 Stability Checks (SLS) - Narrative & Results', expanded=True):
     
-    st.markdown("### Detailed Stability Calculation Narrative")
+    st.markdown("### Detailed Stability Calculation Narrative (SLS Check)")
+    st.info("**Note:** Overturning and Sliding checks are performed on **unfactored** (SLS) loads. Bearing is checked for **factored** (ULS) loads, using the worst case for max pressure.")
     
     # Pre-calculate and format ALL values for simplest F-strings
     
-    # Values for Overturning
-    P_H_val = f"{stab['H']:.2f}"
-    V_val = f"{stab['V']:.2f}"
-    Mo_val = f"{stab['M_o']:.2f}"
-    Mr_val = f"{stab['M_r']:.2f}"
+    # Values for Overturning (SLS)
+    P_H_val = f"{stab['H_sls']:.2f}"
+    V_val = f"{stab['V_sls']:.2f}"
+    Mo_val = f"{stab['M_o_sls']:.2f}"
+    Mr_val = f"{stab['M_r_sls']:.2f}"
     FOS_OT_val = f"**{stab['FOS_OT']:.2f}**"
     
-    P_e_val = f"{pres['P_earth']:.2f}"
-    P_s_val = f"{pres['P_surcharge']:.2f}"
-    P_w_val = f"{pres['P_water']:.2f}"
-    P_seis_val = f"{pres['P_seismic']:.2f}"
-    
-    # NEW values for inclination and resultant height
+    # NEW: Inclination and Resultant Height
     delta_val = f"{pres['delta']:.2f}"
     y_earth_val = f"{pres['y_earth']:.2f}"
 
-    # Values for Sliding
+    # Values for Sliding (SLS)
     mu_base_val = f"{bearing.mu_base:.2f}"
     F_fric_val = f"{stab['F_friction']:.2f}"
-    c_base_val = f"{soil.c_base:.2f}"
-    B_val = f"{geo.B:.2f}"
     F_cohesion_val = f"{stab['F_cohesion']:.2f}"
     Pp_allow_val = f"{stab['Pp_allow']:.2f}"
-    eta_val = f"{bearing.passive_reduction:.2f}"
     F_r_val = f"{stab['F_friction'] + stab['Pp_allow'] + stab['F_cohesion']:.2f}"
     FOS_SL_val = f"**{stab['FOS_SL']:.2f}**"
     
-    # Values for Bearing
+    # Values for Bearing (ULS Worst Case)
+    B_val = f"{geo.B:.2f}"
     x_res_val = f"{stab['x_res']:.2f}"
     B_over_2_val = f"{geo.B / 2:.2f}"
     e_val = f"{stab['e']:.2f}"
@@ -812,29 +842,21 @@ with st.expander('4.2 Stability Checks (SLS) - Narrative & Results', expanded=Tr
 
 
     # 1. Overturning Check
-    st.markdown("#### 1. Overturning Check")
-    # NEW: Inclination and Resultant Height
-    st.markdown(f"**Lateral Force Inclination:** Earth pressure force is applied at an angle of $\\delta = {delta_val}^\circ$ to the normal to the stem.")
-    st.markdown(f"**Earth Force Resultant Height:** $P_{{earth}}$ resultant is at $y_{{earth}} = {y_earth_val} \\text{{ m}}$ from the base.")
-    
-    st.markdown(f"**Total Lateral Forces (H):** $P_H = P_{{earth}} (H) + P_{{surcharge}} + P_{{water}} + P_{{seismic}} = {P_H_val} \\text{{ kN/m}}$ (Horizontal component)")
-    st.markdown(f"**Total Vertical Forces (V):** $V = \\sum W_i \\pm P_{{V,earth}} - W_{{uplift}} = {V_val} \\text{{ kN/m}}$")
-    st.markdown(f"**Overturning Moment ($M_o$):** $M_o = \\sum (P_{{H,i}} \\cdot y_i) = {Mo_val} \\text{{ kNm/m}}$")
-    st.markdown(f"**Resisting Moment ($M_r$):** $M_r = \\sum (W_i \\cdot x_i) = {Mr_val} \\text{{ kNm/m}}$")
+    st.markdown("#### 1. Overturning Check (SLS)")
+    st.markdown(f"**Lateral Force Inclination:** $\\delta = {delta_val}^\circ$ | **Earth Force Resultant Height:** $y_{{earth}} = {y_earth_val} \\text{{ m}}$")
+    st.markdown(f"**Total Lateral Force ($P_H$):** ${P_H_val} \\text{{ kN/m}}$")
+    st.markdown(f"**Total Vertical Force ($V$):** ${V_val} \\text{{ kN/m}}$")
     st.markdown(f"**FOS Overturning:** $\\text{{FOS}}_{{OT}} = M_r / M_o = {Mr_val} / {Mo_val} = {FOS_OT_val}$ (Required $\\ge 2.0$)")
 
     # 2. Sliding Check
-    st.markdown("#### 2. Sliding Check")
-    st.markdown(f"**Friction Resistance ($F_{{friction}}$):** $F_{{friction}} = V \\cdot \\mu = {V_val} \\cdot {mu_base_val} = {F_fric_val} \\text{{ kN/m}}$")
-    st.markdown(f"**Cohesion Resistance ($F_{{cohesion}}$):** $F_{{cohesion}} = c_{{base}} \\cdot B = {c_base_val} \\cdot {B_val} = {F_cohesion_val} \\text{{ kN/m}}$")
-    st.markdown(f"**Passive Resistance ($P_p$):** $P_p \\text{{ (Allowed)}} = {Pp_allow_val} \\text{{ kN/m}}$ ({eta_val} reduction applied)")
-    st.markdown(f"**Total Resisting Force ($F_r$):** $F_r = F_{{friction}} + P_p + F_{{cohesion}} = {F_fric_val} + {Pp_allow_val} + {F_cohesion_val} = {F_r_val} \\text{{ kN/m}}$")
+    st.markdown("#### 2. Sliding Check (SLS)")
+    st.markdown(f"**Total Resisting Force ($F_r$):** $F_r = F_{{friction}} + P_p + F_{{cohesion}} = {F_r_val} \\text{{ kN/m}}$")
     st.markdown(f"**FOS Sliding:** $\\text{{FOS}}_{{SL}} = F_r / P_H = {F_r_val} / {P_H_val} = {FOS_SL_val}$ (Required $\\ge 1.5$)")
 
     # 3. Bearing Check
-    st.markdown("#### 3. Bearing Capacity Check")
-    st.markdown(f"**Resultant Position ($x_{{res}}$):** $x_{{res}} = M_r / V = {Mr_val} / {V_val} = {x_res_val} \\text{{ m}}$")
-    st.markdown(f"**Eccentricity ($e$):** $e = x_{{res}} - B/2 = {x_res_val} - {B_over_2_val} = {e_val} \\text{{ m}}$ (Contact requires $|e| \\le B/6 = {B_over_6_val} \\text{{ m}}$)")
+    st.markdown("#### 3. Bearing Capacity Check (ULS Max Pressure)")
+    st.markdown(f"**Governing ULS Case:** Max $q_{{max}}$ determined by comparing **ULS 1.5** ($q_{{max1}}={stab['q_max1']:.1f} \\text{{ kPa}}$) and **ULS 0.9** ($q_{{max2}}={stab['q_max2']:.1f} \\text{{ kPa}}$)")
+    st.markdown(f"**Eccentricity ($e$):** $e = {e_val} \\text{{ m}}$ (Limit $B/6 = {B_over_6_val} \\text{{ m}}$)")
     st.markdown(f"**Max Bearing Pressure ($q_{{max}}$):** $q_{{max}} = {q_max_val} \\text{{ kPa}}$ (Allowed $\\le {SBC_allow_val_f} \\text{{ kPa}}$)")
     
     st.divider()
@@ -842,7 +864,7 @@ with st.expander('4.2 Stability Checks (SLS) - Narrative & Results', expanded=Tr
     
     # Use raw values for the DataFrame
     df_stab = pd.DataFrame({
-        'Quantity': ['FOS Overturning', 'FOS Sliding', 'Max Bearing Pressure (kPa)', 'Allowed SBC (kPa)', 'Eccentricity (m)', 'B/6 Limit (m)'],
+        'Quantity': ['FOS Overturning (SLS)', 'FOS Sliding (SLS)', 'Max Bearing Pressure (ULS, kPa)', 'Allowed SBC (kPa)', 'Eccentricity (m)', 'B/6 Limit (m)'],
         'Value': [stab['FOS_OT'], stab['FOS_SL'], stab['q_max'], bearing.SBC_allow, stab['e'], geo.B/6]
     })
     st.dataframe(df_stab, use_container_width=True, hide_index=True)
@@ -856,15 +878,6 @@ with st.expander('4.3 Member Design (ULS) and Bill of Quantities', expanded=True
     with col_des:
         st.subheader('Detailed Member Design Narrative (ULS)')
         
-        # Pre-calculate and format values for design narrative
-        fck_val = f"{mat.fck}"
-        fy_val = f"{mat.fy}"
-        cover_val = f"{mat.cover}"
-        d_base_val = f"{desg['d_toe']:.3f}"
-        d_stem_val = f"{desg['d_stem']:.3f}"
-        
-        st.markdown(f"**Materials:** $f_{{ck}} = {fck_val} \\text{{ MPa}}$, $f_y = {fy_val} \\text{{ MPa}}$. $\\text{{Cover}} = {cover_val} \\text{{ mm}}$. $\\text{{Base Effective Depth}} (d_{{base}}) = {d_base_val} \\text{{ m}}$. $\\text{{Stem Effective Depth}} (d_{{stem}}) = {d_stem_val} \\text{{ m}}$.")
-
         # Rebar input fields 
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -895,13 +908,13 @@ with st.expander('4.3 Member Design (ULS) and Bill of Quantities', expanded=True
         As_toe_req_val = f"**{desg['As_toe_req']:.0f}**"
         toe_As_prov_val = f"{toe_As_prov:.0f}"
 
-        # Stem Design Narrative (Simplest F-string)
+        # Stem Design Narrative
         st.markdown(f"**Stem Design (Vertical):** $M_{{u, stem}} = {Mu_stem_val} \\text{{ kNm/m}}$. $A_{{st, req}} = {As_stem_req_val} \\text{{ mm}}^2/\\text{{m}}$. Provided: $\\phi{stem_dia} @ {stem_sp} \\text{{ mm}} \\rightarrow A_{{st, prov}} = {stem_As_prov_val} \\text{{ mm}}^2/\\text{{m}}$.")
         
-        # Heel Design Narrative (Simplest F-string)
+        # Heel Design Narrative
         st.markdown(f"**Heel Design (Top):** $M_{{u, heel}} = {Mu_heel_val} \\text{{ kNm/m}}$. $A_{{st, req}} = {As_heel_req_val} \\text{{ mm}}^2/\\text{{m}}$. Provided: $\\phi{heel_dia} @ {heel_sp} \\text{{ mm}} \\rightarrow A_{{st, prov}} = {heel_As_prov_val} \\text{{ mm}}^2/\\text{{m}}$.")
         
-        # Toe Design Narrative (Simplest F-string)
+        # Toe Design Narrative
         st.markdown(f"**Toe Design (Bottom):** $M_{{u, toe}} = {Mu_toe_val} \\text{{ kNm/m}}$. $A_{{st, req}} = {As_toe_req_val} \\text{{ mm}}^2/\\text{{m}}$. Provided: $\\phi{toe_dia} @ {toe_sp} \\text{{ mm}} \\rightarrow A_{{st, prov}} = {toe_As_prov_val} \\text{{ mm}}^2/\\text{{m}}$.")
         
         # Design Table
@@ -928,13 +941,13 @@ st.divider()
 with st.expander('5. Report Generation and Downloads', expanded=False):
     st.subheader('Final Report & CAD Export')
 
-    # NEW: Prepare the design state for download
+    # Prepare the design state for download
     current_state = create_state_dict(geo, soil, loads, mat, bearing, project_name, wall_type, design_state)
     json_state = json.dumps(current_state, indent=4)
     
     c_save, c_dxf, c_pdf, c_excel = st.columns(4)
 
-    # NEW: Download Design File
+    # Download Design File
     c_save.download_button(
         label="Download Design File (.json) 💾",
         data=json_state,
