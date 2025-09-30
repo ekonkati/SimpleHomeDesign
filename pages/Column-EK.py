@@ -12,239 +12,255 @@ import plotly.graph_objects as go
 # -----------------------------
 # 1. CONSTANTS, UTILITIES, and SECTION DATACLASS
 # -----------------------------
+# Define all constants and simple utility functions outside the main class to keep them global.
 ES = 200000.0  # MPa (N/mm2) - Young's Modulus of Steel
 EPS_CU = 0.0035  # Ultimate concrete compressive strain
 
-def Ec_from_fck(fck: float) -> float:
-    """IS 456: Ec = 5000 * sqrt(fck) (MPa)."""
-    return 5000.0 * math.sqrt(max(fck, 1e-6))
-
 def bar_area(dia_mm: float) -> float:
-    """Area of a single circular bar (mm^2)."""
     return math.pi * (dia_mm ** 2) / 4.0
 
 def kN(value: float) -> str:
-    """Formats N to kN (1 decimal place)."""
     return f"{value / 1e3:.1f}"
 
 def kNm(value: float) -> str:
-    """Formats N-mm to kN-m (1 decimal place)."""
     return f"{value / 1e6:.1f}"
 
 def effective_length_factor(restraint: str) -> float:
-    """Returns k factor based on simplified end restraint (IS 456: Table 28)."""
     if restraint == "Fixed-Fixed": return 0.65
     if restraint == "Fixed-Pinned": return 0.8
     if restraint == "Pinned-Pinned": return 1.0
     if restraint == "Fixed-Free (cantilever)": return 2.0
     return 1.0
 
+def Ec_from_fck(fck: float) -> float:
+    return 5000.0 * math.sqrt(max(fck, 1e-6))
+
 @dataclass
 class Section:
-    b: float  # mm (width along local x-axis)
-    D: float  # mm (depth along local y-axis)
-    cover: float  # mm (clear cover to main bars)
-    bars: List[Tuple[float, float, float]]  # list of (x, y, dia_mm)
+    b: float  
+    D: float  
+    cover: float  
+    bars: List[Tuple[float, float, float]]
     tie_dia: float = 8.0 
 
     @property
-    def Ag(self) -> float:
-        return self.b * self.D
-
+    def Ag(self) -> float: return self.b * self.D
     @property
-    def Ic_x(self) -> float:
-        """Moment of inertia about local x-axis (for bending about x)."""
-        return self.b * self.D**3 / 12.0
-
+    def Ic_x(self) -> float: return self.b * self.D**3 / 12.0
     @property
-    def Ic_y(self) -> float:
-        """Moment of inertia about local y-axis (for bending about y)."""
-        return self.D * self.b**3 / 12.0
-
+    def Ic_y(self) -> float: return self.D * self.b**3 / 12.0
     @property
-    def rx(self) -> float:
-        """Radius of gyration about local x-axis."""
-        return math.sqrt(self.Ic_x / self.Ag)
-
+    def rx(self) -> float: return math.sqrt(self.Ic_x / self.Ag)
     @property
-    def ry(self) -> float:
-        """Radius of gyration about local y-axis."""
-        return math.sqrt(self.Ic_y / self.Ag)
-    
+    def ry(self) -> float: return math.sqrt(self.Ic_y / self.Ag)
     @property
-    def As_long(self) -> float:
-        """Total longitudinal steel area (mm^2)."""
-        return sum(bar_area(dia) for _, _, dia in self.bars)
+    def As_long(self) -> float: return sum(bar_area(dia) for _, _, dia in self.bars)
 
 # -----------------------------
-# 2. CORE ENGINEERING LOGIC 
+# 2. CORE ENGINEERING LOGIC (CLASS)
 # -----------------------------
 
-def linspace_points(a: float, c: float, n: int) -> List[float]:
-    """Generates equally spaced points, including endpoints."""
-    if n <= 0: return []
-    if n == 1: return [a + (c - a) / 2.0]
-    return [a + i * (c - a) / (n - 1) for i in range(n)]
+class ColumnDesigner:
+    """Encapsulates all complex logic to minimize AST parser confusion."""
 
+    def __init__(self, state):
+        self.state = state
+        self.section = self._load_section_and_bars()
 
-def generate_rectangular_bar_layout(b: float, D: float, cover: float, 
-                                    n_top: int, n_bot: int, n_left: int, n_right: int, 
-                                    dia_top: float, dia_bot: float, dia_side: float) -> List[Tuple[float, float, float]]:
-    """
-    Generates bar list (x, y, dia) for a rectangular tied column. Origin at (0, 0, bottom-left).
-    Uses a list/set conversion for uniqueness and handles different bar diameters for rows/sides.
-    """
-    bars_list = []
-    
-    # 1. Bar Centerline Coordinates (simplified to use largest dia for cover check)
-    dx_side = cover + dia_side / 2.0
-    dy_bot = cover + dia_bot / 2.0
-    dy_top = D - (cover + dia_top / 2.0)
-    
-    # Use max(dia) for corner distance calculation to ensure all bars fit inside cover
-    corner_dia = max(dia_top, dia_bot, dia_side)
-    dx_corner = cover + corner_dia / 2.0
-    dy_corner = cover + corner_dia / 2.0
-    
-    # 2. Top and Bottom Rows
-    if n_top > 0:
-        x_coords = linspace_points(dx_corner, b - dx_corner, n_top)
-        for x in x_coords:
-            bars_list.append((x, D - dx_corner, dia_top))
+    def _linspace_points(self, a: float, c: float, n: int) -> List[float]:
+        if n <= 0: return []
+        if n == 1: return [a + (c - a) / 2.0]
+        return [a + i * (c - a) / (n - 1) for i in range(n)]
 
-    if n_bot > 0:
-        x_coords = linspace_points(dx_corner, b - dx_corner, n_bot)
-        for x in x_coords:
-            bars_list.append((x, dy_corner, dia_bot))
-            
-    # 3. Left and Right Columns (Intermediate bars)
-    # Y-span for side bars goes from the bottom row position to the top row position
-    y_start = dy_corner
-    y_end = D - dy_corner
+    def _generate_bar_layout(self) -> List[Tuple[float, float, float]]:
+        b, D, cover = self.state["b"], self.state["D"], self.state["cover"]
+        n_top, n_bot, n_left, n_right = self.state["n_top"], self.state["n_bot"], self.state["n_left"], self.state["n_right"]
+        dia_top, dia_bot, dia_side = self.state["dia_top"], self.state["dia_bot"], self.state["dia_side"]
+        
+        bars_list = []
+        corner_dia = max(dia_top, dia_bot, dia_side)
+        dx_corner = cover + corner_dia / 2.0
 
-    # Left Column
-    y_coords_l = linspace_points(y_start, y_end, n_left)
-    for y in y_coords_l:
-        bars_list.append((dx_corner, y, dia_side))
+        # Top and Bottom Rows
+        if n_top > 0:
+            x_coords = self._linspace_points(dx_corner, b - dx_corner, n_top)
+            for x in x_coords: bars_list.append((x, D - dx_corner, dia_top))
 
-    # Right Column
-    y_coords_r = linspace_points(y_start, y_end, n_right)
-    for y in y_coords_r:
-        bars_list.append((b - dx_corner, y, dia_side))
+        if n_bot > 0:
+            x_coords = self._linspace_points(dx_corner, b - dx_corner, n_bot)
+            for x in x_coords: bars_list.append((x, dx_corner, dia_bot))
+                
+        # Left and Right Columns (Intermediate bars)
+        y_start = dx_corner
+        y_end = D - dx_corner
 
-    # Convert list to set of (x, y) coordinates to identify unique locations (corners)
-    # Then map back to the largest diameter used at that location
-    unique_locations = {}
-    for x, y, dia in bars_list:
-        # Use rounding for floating point comparison to define 'location'
-        loc = (round(x, 4), round(y, 4))
-        if loc not in unique_locations or dia > unique_locations[loc][2]:
-            unique_locations[loc] = (x, y, dia)
+        y_coords_l = self._linspace_points(y_start, y_end, n_left)
+        for y in y_coords_l: bars_list.append((dx_corner, y, dia_side))
 
-    return sorted([v for v in unique_locations.values()], key=lambda x: (x[1], x[0]))
+        y_coords_r = self._linspace_points(y_start, y_end, n_right)
+        for y in y_coords_r: bars_list.append((b - dx_corner, y, dia_side))
 
+        # Handle unique locations and max diameter
+        unique_locations = {}
+        for x, y, dia in bars_list:
+            loc = (round(x, 4), round(y, 4))
+            if loc not in unique_locations or dia > unique_locations[loc][2]:
+                unique_locations[loc] = (x, y, dia)
 
-def uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: float, axis: str) -> float:
-    """
-    Computes ultimate uniaxial moment capacity Mu,lim for a given factored axial Pu (N).
-    Bending about x (D is depth), Compression face at y=D. 
-    Bending about y (b is depth), Compression face at x=0.
-    """
-    dimension = section.D if axis == 'x' else section.b
-    
-    def forces_and_moment(c: float):
-        # Concrete block contribution (0.36 fck b x_u * (D/2 - 0.42 x_u))
+        return sorted([v for v in unique_locations.values()], key=lambda x: (x[1], x[0]))
+
+    def _load_section_and_bars(self):
+        bars = self._generate_bar_layout()
+        self.state["As_long"] = sum(bar_area(dia) for _, _, dia in bars)
+        self.state["bars"] = bars
+        return Section(b=self.state["b"], D=self.state["D"], cover=self.state["cover"], bars=bars, tie_dia=self.state["tie_dia"])
+
+    def _forces_and_moment(self, c: float, axis: str):
+        fck, fy = self.state["fck"], self.state["fy"]
+        dimension = self.section.D if axis == 'x' else self.section.b
+        
         Cc = 0.36 * fck * dimension * min(c, dimension)
         arm_Cc = 0.5 * dimension - 0.42 * min(c, dimension)
         Mc = Cc * arm_Cc
-        
         Fs, Ms = 0.0, 0.0
         
-        for (x_abs, y_abs, dia) in section.bars:
+        for (x_abs, y_abs, dia) in self.section.bars:
             As = bar_area(dia)
-            # y is distance from compression face 
-            if axis == 'x': # Bending about x-axis (D is depth)
-                y = section.D - y_abs
-            else: # Bending about y-axis (b is depth)
-                y = x_abs 
+            if axis == 'x': y = self.section.D - y_abs
+            else: y = x_abs 
             
             strain = EPS_CU * (1.0 - (y / max(c, 1e-6)))
             stress = np.clip(ES * strain, -0.87 * fy, 0.87 * fy)
             force = stress * As
-            
-            z = 0.5 * dimension - y # lever arm to centroid
+            z = 0.5 * dimension - y 
             
             Fs += force
             Ms += force * z
 
-        N_res = Cc + Fs  # resultant axial (compression +)
-        M_res = Mc + Ms  # about centroidal axis
+        N_res = Cc + Fs
+        M_res = Mc + Ms
         return N_res, M_res
 
-    target = Pu
-    c_min = 0.05 * dimension
-    c_max = 1.50 * dimension
-
-    # Initial points for bisection check
-    cL, cR = c_min, c_max
-    NL, ML = forces_and_moment(cL)
-    NR, MR = forces_and_moment(cR)
-
-    # Handle cases where the target load is outside the computed range
-    if target <= NL: return ML
-    if target >= NR: return MR
-
-    for _ in range(60):
-        cm = 0.5 * (cL + cR)
-        Nm, Mm = forces_and_moment(cm)
-        if abs(Nm - target) < 1.0: return float(Mm)
+    def _uniaxial_capacity_Mu_for_Pu(self, Pu: float, axis: str) -> float:
+        dimension = self.section.D if axis == 'x' else self.section.b
         
-        if (NL - target) * (Nm - target) <= 0:
-            cR, NR, MR = cm, Nm, Mm
-        else:
-            cL, NL, ML = cm, Nm, Mm
-    
-    return float(0.5 * (ML + MR))
+        target = Pu
+        c_min = 0.05 * dimension
+        c_max = 1.50 * dimension
 
-def moment_magnifier(Pu: float, le_mm: float, fck: float, Ic: float, Cm: float = 0.85, sway: bool = False) -> float:
-    """Compute simple moment magnifier δ based on Pcr."""
-    Ec = 5000.0 * math.sqrt(max(fck, 1e-6))
-    Pcr = (math.pi ** 2) * 0.4 * Ec * Ic / (le_mm ** 2 + 1e-9)
-    if Pcr <= Pu: return 10.0 # Effectively fail/unstable
-    delta = 1.0 / max(1e-6, (1.0 - Pu / Pcr))
-    if not sway: delta = max(1.0, Cm * delta)
-    return float(np.clip(delta, 1.0, 2.5))
+        cL, cR = c_min, c_max
+        NL, ML = self._forces_and_moment(cL, axis)
+        NR, MR = self._forces_and_moment(cR, axis)
 
-def biaxial_utilization(section: Section, fck: float, fy: float, Pu: float, Mux_eff: float, Muy_eff: float, alpha: float) -> Tuple[float, float, float]:
-    Mux_lim = uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='x')
-    Muy_lim = uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='y')
-    
-    # Avoid division by zero if capacity is near zero
-    Mux_lim = max(Mux_lim, 1e-3) if abs(Mux_eff) > 1e-3 else Mux_lim
-    Muy_lim = max(Muy_lim, 1e-3) if abs(Muy_eff) > 1e-3 else Muy_lim
+        if target <= NL: return ML
+        if target >= NR: return MR
+
+        for _ in range(60):
+            cm = 0.5 * (cL + cR)
+            Nm, Mm = self._forces_and_moment(cm, axis)
+            if abs(Nm - target) < 1.0: return float(Mm)
+            
+            if (NL - target) * (Nm - target) <= 0: cR, NR, MR = cm, Nm, Mm
+            else: cL, NL, ML = cm, Nm, Mm
         
-    Rx = (abs(Mux_eff) / Mux_lim) ** alpha
-    Ry = (abs(Muy_eff) / Muy_lim) ** alpha
-    util = Rx + Ry
-    return util, Mux_lim, Muy_lim
+        return float(0.5 * (ML + MR))
+
+    def calculate_slenderness_and_magnification(self):
+        le_x = self.state["kx"] * self.state["storey_clear"]
+        le_y = self.state["ky"] * self.state["storey_clear"]
+        lam_x = le_x / max(self.section.rx, 1e-6)
+        lam_y = le_y / max(self.section.ry, 1e-6)
+        short_x = lam_x <= 12.0
+        short_y = lam_y <= 12.0
+        self.state.update(dict(le_x=le_x, le_y=le_y, lam_x=lam_x, lam_y=lam_y, short_x=short_x, short_y=short_y))
+
+        delta_x = moment_magnifier(self.state["Pu"], le_x, self.state["fck"], self.section.Ic_x, Cm=0.85, sway=self.state["sway"]) if not short_x else 1.0
+        delta_y = moment_magnifier(self.state["Pu"], le_y, self.state["fck"], self.section.Ic_y, Cm=0.85, sway=self.state["sway"]) if not short_y else 1.0
+
+        Mux_eff = self.state["Mux"] * delta_x
+        Muy_eff = self.state["Muy"] * delta_y
+        self.state.update(dict(Mux_eff=Mux_eff, Muy_eff=Muy_eff, delta_x=delta_x, delta_y=delta_y))
+        
+    def calculate_biaxial_utilization(self):
+        Pu, Mux_eff, Muy_eff, alpha = self.state["Pu"], self.state["Mux_eff"], self.state["Muy_eff"], self.state["alpha"]
+        fck, fy = self.state["fck"], self.state["fy"]
+        
+        Mux_lim = self._uniaxial_capacity_Mu_for_Pu(Pu, axis='x')
+        Muy_lim = self._uniaxial_capacity_Mu_for_Pu(Pu, axis='y')
+        
+        Mux_lim = max(Mux_lim, 1e-3) if abs(Mux_eff) > 1e-3 else Mux_lim
+        Muy_lim = max(Muy_lim, 1e-3) if abs(Muy_eff) > 1e-3 else Muy_lim
+            
+        Rx = (abs(Mux_eff) / Mux_lim) ** alpha
+        Ry = (abs(Muy_eff) / Muy_lim) ** alpha
+        util = Rx + Ry
+        self.state.update(dict(Mux_lim=Mux_lim, Muy_lim=Muy_lim, util=util))
+        
+    def calculate_shear_design(self):
+        max_long_dia = max([bar[2] for bar in self.state["bars"]], default=16.0)
+        d_eff = self.state["D"] - (self.state["cover"] + 0.5 * max_long_dia) 
+        
+        Ag, fck, Pu, fy = self.section.Ag, self.state["fck"], self.state["Pu"], self.state["fy"]
+        
+        # Vc calculation
+        phiN_calc = 1.0 + (Pu / max(1.0, (0.25 * fck * Ag)))
+        phiN = float(np.clip(phiN_calc, 0.5, 1.5))
+        tau_c = 0.62 * math.sqrt(fck) / 1.0 
+        Vc = tau_c * self.state["b"] * d_eff * phiN
+        Vus = max(0.0, self.state["Vu"] - Vc)
+        self.state.update(dict(Vc=Vc, Vus=Vus, phiN=phiN, d_eff=d_eff))
+        
+        # Tie spacing required for shear
+        Asv = self.state["legs"] * bar_area(self.state["tie_dia"])
+        s_required = (0.87 * fy * Asv * d_eff) / max(Vus, 1e-6) if Vus > 0 else 300.0
+        self.state["s_required"] = s_required
+
+        # Tie spacing max limits (detailing)
+        s_lim1 = 16.0 * max_long_dia
+        s_lim2 = min(self.state["b"], self.state["D"]) 
+        s_lim3 = 300.0
+        s_cap = min(s_lim1, s_lim2, s_lim3)
+        self.state["s_governing_tie"] = min(s_cap, s_required)
+        self.state["s_cap_detailing"] = s_cap
+
+    def _plot_pm_curve(self, axis: str):
+        dimension = self.section.D if axis == 'x' else self.section.b
+        
+        # Generate points for the curve
+        cmin = 0.01 * dimension
+        cmax = 1.50 * dimension
+        cs = np.linspace(cmin, cmax, 120)
+        P_list, M_list = [], []
+        for c in cs:
+            N, M = self._forces_and_moment(c, axis)
+            P_list.append(N)
+            M_list.append(abs(M))
+
+        df = pd.DataFrame({'P (kN)': np.array(P_list)/1e3, f'M_{axis} (kNm)': np.array(M_list)/1e6})
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df['P (kN)'], y=df[f'M_{axis} (kNm)'], mode='lines', name='Capacity Envelope (M_lim)', line=dict(color='#0a66c2', width=3)))
+        
+        # Add demand point
+        Pu_kNm = self.state["Pu"] / 1e3
+        Mu_eff_kNm = abs(self.state[f"M{axis}x_eff"]) / 1e6
+        fig.add_trace(go.Scatter(x=[Pu_kNm], y=[Mu_eff_kNm], mode='markers', name='Demand (Pu, Mu_eff)', marker=dict(symbol='x', size=12, color='red', line=dict(width=2, color='red'))))
+        
+        fig.update_layout(title=f'P–M Capacity Envelope (Axis: {axis.upper()})', xaxis_title='Axial Load P (kN)', yaxis_title=f'Moment M_{axis} (kNm)', hovermode="x unified", margin=dict(l=20, r=20, t=40, b=20), plot_bgcolor='white')
+        return fig
 
 # ----------------------------
-# 3. PLOTLY VISUALIZATIONS
+# 3. PLOTLY AND DATA UTILITY FUNCTIONS (Defined outside class)
 # ----------------------------
 
 def plotly_cross_section(section: Section) -> go.Figure:
-    """Generates a scaled Plotly figure of the column cross-section."""
     b, D = section.b, section.D
     cover = section.cover
     fig = go.Figure()
 
-    # 1. Concrete Cross-Section (Outer box)
     fig.add_shape(type="rect", x0=0, y0=0, x1=b, y1=D, line=dict(color="black", width=2), fillcolor="rgba(240, 240, 240, 0.8)"))
-
-    # 2. Clear Cover Boundary
     fig.add_shape(type="rect", x0=cover, y0=cover, x1=b - cover, y1=D - cover, line=dict(color="gray", width=1, dash="dot"), fillcolor="rgba(0,0,0,0)"))
 
-    # 3. Longitudinal Bars
     bar_x, bar_y, bar_size, bar_text = [], [], [], []
     for x_geom, y_geom, dia in section.bars:
         bar_x.append(x_geom)
@@ -258,7 +274,6 @@ def plotly_cross_section(section: Section) -> go.Figure:
         hovertemplate='Size: %{text}<extra></extra>', text=bar_text
     ))
 
-    # Layout and Aspect Ratio
     max_dim = max(b, D)
     fig.update_layout(
         title=f"Cross Section (b={b:.0f}, D={D:.0f} mm)",
@@ -271,35 +286,27 @@ def plotly_cross_section(section: Section) -> go.Figure:
     return fig
 
 def plotly_elevation(state: dict, section: Section) -> go.Figure:
-    """Generates an elevation view of the column showing ties and effective length."""
     b = section.b
     lo = state["storey_clear"]
     le = state["kx"] * lo
     
     fig = go.Figure()
-
-    # 1. Column body
     fig.add_shape(type="rect", x0=-b/2, y0=0, x1=b/2, y1=lo, line=dict(color="black", width=2), fillcolor="rgba(240, 240, 240, 0.8)"))
 
-    # 2. Longitudinal Rebars (Simplified 4 face bars for visualization)
-    x_rebars = [-b/2 + section.cover, b/2 - section.cover] 
+    x_rebars = [-b/2 + section.cover, b/2 - section.cover]
     for x_r in x_rebars:
         fig.add_trace(go.Scatter(x=[x_r, x_r], y=[0, lo], mode='lines', name='Rebar', line=dict(color='#0a66c2', width=2), showlegend=False))
 
-    # 3. Ties (Horizontal lines)
     s_prov = state.get("tie_spacing", 150.0)
     n_ties = int(lo / s_prov)
     if n_ties > 0:
         tie_y = np.linspace(s_prov / 2, lo - s_prov / 2, n_ties)
-        
         for y_t in tie_y:
             fig.add_trace(go.Scatter(x=[-b/2, b/2], y=[y_t, y_t], mode='lines', name='Tie', line=dict(color='#888', width=1), showlegend=False))
     
-    # 4. Effective Length (Annotation)
     fig.add_shape(type="line", x0=b/2 + 20, y0=lo/2 - le/2, x1=b/2 + 20, y1=lo/2 + le/2, line=dict(color="red", width=3, dash="dash"))
     fig.add_annotation(x=b/2 + 20, y=lo/2 + le/2 + 50, text=f"$l_e = {le:.0f} mm$", showarrow=False, font=dict(color="red", size=14))
     
-    # 5. Tie Spacing Annotation
     if n_ties > 0:
         fig.add_annotation(
             x=-b/2 - 20, y=s_prov / 2 + 50,
@@ -307,7 +314,6 @@ def plotly_elevation(state: dict, section: Section) -> go.Figure:
             bgcolor="white", font=dict(size=12)
         )
 
-    # Layout
     max_x = b/2 + 100
     fig.update_layout(
         title=f"Column Elevation ($l_0 = {lo:.0f} mm$)",
@@ -316,54 +322,6 @@ def plotly_elevation(state: dict, section: Section) -> go.Figure:
         width=450, height=600, showlegend=False, plot_bgcolor='white',
     )
     return fig
-
-def plot_pm_curve_plotly(section: Section, fck: float, fy: float, Pu: float, Mu_eff: float, axis: str):
-    dimension = section.D if axis == 'x' else section.b
-
-    def forces_and_moment_for_curve(c: float):
-        Cc = 0.36 * fck * dimension * min(c, dimension)
-        arm_Cc = 0.5 * dimension - 0.42 * min(c, dimension)
-        Mc = Cc * arm_Cc
-        Fs, Ms = 0.0, 0.0
-        
-        for (x_abs, y_abs, dia) in section.bars:
-            As = bar_area(dia)
-            if axis == 'x': y = section.D - y_abs
-            else: y = x_abs 
-            
-            strain = EPS_CU * (1.0 - (y / max(c, 1e-6)))
-            stress = np.clip(ES * strain, -0.87 * fy, 0.87 * fy)
-            force = stress * As
-            z = 0.5 * dimension - y 
-            
-            Fs += force
-            Ms += force * z
-
-        N = Cc + Fs
-        M = Mc + Ms
-        return N, M
-
-    # Generate points
-    cmin = 0.01 * dimension
-    cmax = 1.50 * dimension
-    cs = np.linspace(cmin, cmax, 120)
-    P_list, M_list = [], []
-    for c in cs:
-        N, M = forces_and_moment_for_curve(c)
-        P_list.append(N)
-        M_list.append(abs(M))
-
-    df = pd.DataFrame({'P (kN)': np.array(P_list)/1e3, f'M_{axis} (kNm)': np.array(M_list)/1e6})
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df['P (kN)'], y=df[f'M_{axis} (kNm)'], mode='lines', name='Capacity Envelope (M_lim)', line=dict(color='#0a66c2', width=3)))
-    fig.add_trace(go.Scatter(x=[Pu/1e3], y=[abs(Mu_eff)/1e6], mode='markers', name='Demand (Pu, Mu_eff)', marker=dict(symbol='x', size=12, color='red', line=dict(width=2, color='red'))))
-    fig.update_layout(title=f'P–M Capacity Envelope (Axis: {axis.upper()})', xaxis_title='Axial Load P (kN)', yaxis_title=f'Moment M_{axis} (kNm)', hovermode="x unified", margin=dict(l=20, r=20, t=40, b=20), plot_bgcolor='white')
-    return fig
-
-# ----------------------------
-# 4. DATA UTILITY FUNCTIONS
-# ----------------------------
 
 def to_json_serializable(state: dict) -> dict:
     safe_state = {}
@@ -392,17 +350,8 @@ def initialize_state():
             "alpha": 1.0, "bars": [], "legs": 2
         }
 
-def load_section_and_bars(state):
-    bars_temp = generate_rectangular_bar_layout(state["b"], state["D"], state["cover"], 
-                                                state["n_top"], state["n_bot"], state["n_left"], state["n_right"], 
-                                                state["dia_top"], state["dia_bot"], state["dia_side"])
-    section = Section(b=state["b"], D=state["D"], cover=state["cover"], bars=bars_temp, tie_dia=state["tie_dia"])
-    state["As_long"] = section.As_long
-    state["bars"] = bars_temp
-    return section
-
 # ----------------------------
-# MAIN APP FUNCTION
+# MAIN APP EXECUTION
 # ----------------------------
 
 def main():
@@ -412,8 +361,11 @@ def main():
 
     initialize_state()
     state = st.session_state.state
-    section = load_section_and_bars(state)
 
+    # Instantiate the designer class
+    designer = ColumnDesigner(state)
+    section = designer.section # Get the current section definition
+    
     # -----------------------------
     # 0. Data Management
     # -----------------------------
@@ -436,16 +388,14 @@ def main():
             st.markdown("**Export Current Design State**")
             safe_state = to_json_serializable(state)
             st.markdown(get_json_download_link(safe_state, "column_design_state.json"), unsafe_allow_html=True)
-
+        else:
+            st.info("Define inputs first to enable data export.")
     st.markdown("---")
 
     # -----------------------------
     # 1. Geometry, Materials, and Loads
     # -----------------------------
     st.header("1️⃣ Column Geometry, Materials, and Loads")
-    st.markdown("Define the **physical dimensions, material grades, and factored loads**.")
-
-    # --- Geometry and Materials ---
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         state["b"] = st.number_input("Width $b$ (mm)", 200.0, 2000.0, state["b"], 25.0, key='in_b')
@@ -467,63 +417,40 @@ def main():
         state["Mux"] = st.number_input("Moment $M_{ux}$ (kNm)", -2000.0, 2000.0, state["Mux"] / 1e6, 5.0, key='in_Mux') * 1e6
         state["Muy"] = st.number_input("Moment $M_{uy}$ (kNm)", -2000.0, 2000.0, state["Muy"] / 1e6, 5.0, key='in_Muy') * 1e6
         state["Vu"] = st.number_input("Shear $V_u$ (kN)", 0.0, 5000.0, state["Vu"] / 1e3, 5.0, key='in_Vu') * 1e3
-    
-    # Re-instantiate Section with updated dims
-    section = load_section_and_bars(state)
-    
+
+    # --- Re-calculate dependent properties ---
+    designer = ColumnDesigner(state)
+    designer.calculate_slenderness_and_magnification()
+    section = designer.section
+
     st.markdown("---")
 
     # -----------------------------
-    # 2. Slenderness Check
+    # 2 & 3. Slenderness & Moment Magnification
     # -----------------------------
-    st.header("2️⃣ Slenderness Check (IS 456: Cl. 25.1)")
+    st.header("2️⃣/3️⃣ Slenderness and Second-Order Moment Magnification")
 
-    le_x = state["kx"] * state["storey_clear"]
-    le_y = state["ky"] * state["storey_clear"]
-    lam_x = le_x / max(section.rx, 1e-6)
-    lam_y = le_y / max(section.ry, 1e-6)
-    short_x = lam_x <= 12.0
-    short_y = lam_y <= 12.0
-    state.update(dict(le_x=le_x, le_y=le_y, lam_x=lam_x, lam_y=lam_y, short_x=short_x, short_y=short_y))
+    c_slender, c_magnified = st.columns(2)
+    with c_slender:
+        st.markdown("### Slenderness Check (IS 456: Cl. 25.1)")
+        st.metric(f"Slenderness $\lambda_x = l_{{e,x}}/r_x$", f"{state['lam_x']:.1f}")
+        st.metric(f"Slenderness $\lambda_y = l_{{e,y}}/r_y$", f"{state['lam_y']:.1f}")
+        st.info(f"Classification → About x: {'**Short**' if state['short_x'] else '**Slender**'}, About y: {'**Short**' if state['short_y'] else '**Slender**'}")
+        
+    with c_magnified:
+        st.markdown("### Magnified Moments $M_{u}'$")
+        st.metric("Magnifier $\\delta_x$", f"{state['delta_x']:.2f}")
+        st.metric("Magnifier $\\delta_y$", f"{state['delta_y']:.2f}")
+        st.metric("Magnified $M_{ux}'$ (kNm)", f"{kNm(state['Mux_eff'])}")
+        st.metric("Magnified $M_{uy}'$ (kNm)", f"{kNm(state['Muy_eff'])}")
 
-    col_x, col_y = st.columns(2)
-    with col_x:
-        st.metric(f"Effective Length $l_{{e,x}}$", f"{le_x:.0f} mm")
-        st.metric("Slenderness $\lambda_x$", f"{lam_x:.1f}")
-    with col_y:
-        st.metric(f"Effective Length $l_{{e,y}}$", f"{le_y:.0f} mm")
-        st.metric("Slenderness $\lambda_y$", f"{lam_y:.1f}")
-
-    st.info(f"Classification → About x: {'**Short**' if short_x else '**Slender**'}, About y: {'**Short**' if short_y else '**Slender**'}")
     st.markdown("---")
-
-    # -----------------------------
-    # 3. Moments (2nd-order magnification)
-    # -----------------------------
-    st.header("3️⃣ Second-Order Moment Magnification")
     
-    delta_x = moment_magnifier(state["Pu"], state["le_x"], state["fck"], section.Ic_x, Cm=0.85, sway=state["sway"]) if not state["short_x"] else 1.0
-    delta_y = moment_magnifier(state["Pu"], state["le_y"], state["fck"], section.Ic_y, Cm=0.85, sway=state["sway"]) if not state["short_y"] else 1.0
-
-    Mux_eff = state["Mux"] * delta_x
-    Muy_eff = state["Muy"] * delta_y
-    state.update(dict(Mux_eff=Mux_eff, Muy_eff=Muy_eff, delta_x=delta_x, delta_y=delta_y))
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.write(f"Magnifier $\\delta_x$ = **{delta_x:.2f}**")
-        st.metric("Magnified Moment $M_{ux}'$ (kNm)", f"{kNm(Mux_eff)}")
-    with c2:
-        st.write(f"Magnifier $\\delta_y$ = **{delta_y:.2f}**")
-        st.metric("Magnified Moment $M_{uy}'$ (kNm)", f"{kNm(Muy_eff)}")
-    st.markdown("---")
-
     # -----------------------------
     # 6. Detailing and Final Check (Rebar Adjustment)
     # -----------------------------
     st.header("6️⃣ Longitudinal Rebar Adjustment & Detailing Checks")
     
-    # --- Longitudinal Bar Layout Inputs ---
     cL1, cL2, cL3, cL4, cL5 = st.columns(5)
     bar_options = [12.0, 16.0, 20.0, 25.0, 28.0, 32.0]
     
@@ -547,17 +474,20 @@ def main():
         state["tie_dia"] = st.selectbox("Tie $\\phi$ (mm)", tie_options, index=tie_options.index(state["tie_dia"]), key='in_tdia_shear')
         state["tie_spacing"] = st.number_input("Tie Spacing $s$ (mm)", 50.0, 300.0, state["tie_spacing"], 5.0, key='in_ts')
 
-    # --- Bar Generation and Re-definition of Section ---
-    section = load_section_and_bars(state)
+    # Update Section and Run Calculations again
+    designer = ColumnDesigner(state)
+    designer.calculate_slenderness_and_magnification()
+    designer.calculate_biaxial_utilization()
+    designer.calculate_shear_design()
+    section = designer.section
 
-    st.markdown("### Cross-Section and Elevation Visualization")
     c_plot_cs, c_plot_elev = st.columns(2)
     with c_plot_cs:
         st.plotly_chart(plotly_cross_section(section), use_container_width=True)
     with c_plot_elev:
         st.plotly_chart(plotly_elevation(state, section), use_container_width=True)
     
-    # Detailing Checks (Minimum/Maximum Steel)
+    # Detailing Checks
     As_long = section.As_long
     rho_long = 100.0 * As_long / section.Ag
     As_min = 0.008 * section.Ag 
@@ -568,12 +498,9 @@ def main():
     with c_l2: st.metric("$A_{st}$ Minimum (0.8%)", f"{As_min:.0f} mm²")
     with c_l3: st.metric("$A_{st}$ Maximum (6.0%)", f"{As_max:.0f} mm²")
     
-    if As_long < As_min:
-        st.error("⚠️ **FAIL**: Provided steel is less than the 0.8% minimum.")
-    elif As_long > As_max:
-        st.error("⚠️ **FAIL**: Provided steel exceeds the 6.0% maximum.")
-    else:
-        st.success("✅ Minimum/Maximum steel limits are met.")
+    if As_long < As_min: st.error("⚠️ **FAIL**: Provided steel is less than the 0.8% minimum.")
+    elif As_long > As_max: st.error("⚠️ **FAIL**: Provided steel exceeds the 6.0% maximum.")
+    else: st.success("✅ Minimum/Maximum steel limits are met.")
 
     st.markdown("---")
 
@@ -581,16 +508,12 @@ def main():
     # 4. Interaction (Biaxial)
     # -----------------------------
     st.header("4️⃣ Biaxial Interaction and Capacity Check (Strength)")
-
-    # Contextual Input: Interaction Exponent
+    
     st.markdown("### Bresler's Interaction Formula (IS 456)")
-    state["alpha"] = st.slider("Interaction Exponent $\\alpha$ (IS 456 suggests 1.0-2.0)", 0.8, 2.0, state["alpha"], 0.1, key='in_alpha_check')
+    state["alpha"] = st.slider("Interaction Exponent $\\alpha$", 0.8, 2.0, state["alpha"], 0.1, key='in_alpha_check')
     st.latex(r"\left(\frac{|M_{ux}'|}{M_{ux,lim}}\right)^{\alpha} + \left(\frac{|M_{uy}'|}{M_{uy,lim}}\right)^{\alpha} \le 1.0")
 
-
-    with st.spinner("Computing uniaxial capacities via strain compatibility..."):
-        util, Mux_lim, Muy_lim = biaxial_utilization(section, state["fck"], state["fy"], state["Pu"], Mux_eff, Muy_eff, state["alpha"])
-    state.update(dict(Mux_lim=Mux_lim, Muy_lim=Muy_lim, util=util))
+    util, Mux_lim, Muy_lim = state["util"], state["Mux_lim"], state["Muy_lim"]
 
     c1, c2, c3 = st.columns(3)
     with c1: st.metric("Uniaxial $M_{ux,lim}$ (kNm)", f"{kNm(Mux_lim)}")
@@ -604,11 +527,10 @@ def main():
     st.markdown("#### Interactive P–M Interaction Curves (Capacity vs. Demand)")
     colx, coly = st.columns(2)
     with colx:
-        figx = plot_pm_curve_plotly(section, state["fck"], state["fy"], state["Pu"], Mux_eff, 'x')
-        st.plotly_chart(figx, use_container_width=True)
+        st.plotly_chart(designer._plot_pm_curve('x'), use_container_width=True)
     with coly:
-        figy = plot_pm_curve_plotly(section, state["fck"], state["fy"], state["Pu"], Muy_eff, 'y')
-        st.plotly_chart(figy, use_container_width=True)
+        st.plotly_chart(designer._plot_pm_curve('y'), use_container_width=True)
+    
     st.markdown("---")
 
 
@@ -616,48 +538,24 @@ def main():
     # 5. Shear Design
     # -----------------------------
     st.header("5️⃣ Shear Design (IS 456 Cl. 40)")
-    st.markdown("Shear capacity ($V_c$) is enhanced by axial compression ($\\phi_N$).")
+    
+    Vc, Vus, s_governing_tie, s_cap = state["Vc"], state["Vus"], state["s_governing_tie"], state["s_cap_detailing"]
+    s_prov = state["tie_spacing"]
 
-    # Calculations
-    max_long_dia = max([bar[2] for bar in state["bars"]], default=16.0)
-    d_eff = state["D"] - (state["cover"] + 0.5 * max_long_dia) 
-    
-    Ag = section.Ag
-    phiN_calc = 1.0 + (state["Pu"] / max(1.0, (0.25 * state["fck"] * Ag)))
-    phiN = float(np.clip(phiN_calc, 0.5, 1.5))
-    
-    tau_c = 0.62 * math.sqrt(state["fck"]) / 1.0 
-    Vc = tau_c * state["b"] * d_eff * phiN
-    Vus = max(0.0, state["Vu"] - Vc)
-    state.update(dict(Vc=Vc, Vus=Vus, phiN=phiN, d_eff=d_eff))
-    
     c_met1, c_met2 = st.columns(2)
     with c_met1: st.metric("Concrete Capacity $V_c$ (kN)", f"{kN(Vc)}")
     with c_met2: st.metric("Excess Shear $V_{us}$ (kN)", f"{kN(Vus)}")
         
-    # Shear reinforcement calculation
-    Asv = state["legs"] * bar_area(state["tie_dia"])
-    s_required = (0.87 * state["fy"] * Asv * d_eff) / max(Vus, 1e-6) if Vus > 0 else 300.0
-    state["s_required"] = s_required
-
     if Vus > 0:
-        st.warning(f"$V_{{us}}$ of {kN(Vus)} kN requires $s_{{req}}$ $\\le$ **{s_required:.0f} mm**.")
+        st.warning(f"$V_{{us}}$ of {kN(Vus)} kN requires spacing $\\le$ **{state['s_required']:.0f} mm**.")
     else:
         st.info("Vu $\\le V_c \\rightarrow$ Provide minimum transverse reinforcement.")
     
-    # Tie Spacing Detailing Checks (Summary)
-    s_lim1 = 16.0 * max_long_dia
-    s_lim2 = min(state["b"], state["D"]) 
-    s_lim3 = 300.0
-    s_cap = min(s_lim1, s_lim2, s_lim3)
-    s_governing_tie = min(s_cap, state["s_required"])
-    state["s_governing_tie"] = s_governing_tie
-    
-    st.markdown("### Transverse Reinforcement Spacing Check (IS 456 & Shear)")
+    st.markdown("### Transverse Reinforcement Spacing Check")
     st.write(f"Tie Spacing Max (IS 456 Detailing) $\\le$ **{s_cap:.0f} mm**.")
     
-    if state["tie_spacing"] <= s_governing_tie:
-        st.success(f"Tie Spacing PASS: {state['tie_spacing']:.0f} mm $\\le$ {s_governing_tie:.0f} mm.")
+    if s_prov <= s_governing_tie:
+        st.success(f"Tie Spacing PASS: {s_prov:.0f} mm $\\le$ {s_governing_tie:.0f} mm.")
     else:
         st.error(f"Tie Spacing FAIL: Must provide spacing $\\le$ **{s_governing_tie:.0f} mm**.")
 
@@ -672,11 +570,11 @@ def main():
     
     out = {
         "b (mm)": state["b"], "D (mm)": state["D"], "fck (MPa)": state["fck"], "fy (MPa)": state["fy"],
-        "Pu (kN)": state["Pu"] / 1e3, "Mux′ (kNm)": kNm(Mux_eff), "Muy′ (kNm)": kNm(Muy_eff), "Vu (kN)": state["Vu"] / 1e3,
+        "Pu (kN)": state["Pu"] / 1e3, "Mux′ (kNm)": kNm(state["Mux_eff"]), "Muy′ (kNm)": kNm(state["Muy_eff"]), "Vu (kN)": state["Vu"] / 1e3,
         "--- STRENGTH RESULTS ---": "---",
         "Slenderness λx": f"{state['lam_x']:.1f}", "Slenderness λy": f"{state['lam_y']:.1f}",
         "Moment Magnifier δx": f"{state['delta_x']:.2f}", 
-        "Uniaxial Capacity Mux,lim (kNm)": kNm(Mux_lim),
+        "Uniaxial Capacity Mux,lim (kNm)": kNm(state["Mux_lim"]),
         "Biaxial Utilization (≤1)": f"{state['util']:.2f}",
         "Concrete Shear Vc (kN)": state["Vc"] / 1e3, "Vus (kN)": state["Vus"] / 1e3,
         "--- DETAILING RESULTS ---": "---",
@@ -689,7 +587,7 @@ def main():
     df_out = pd.DataFrame({"Parameter": list(out.keys()), "Value": list(out.values())})
     st.dataframe(df_out, use_container_width=True)
     
-    st.caption("Notes: Uniaxial capacities are computed via full strain compatibility. All calculations follow IS 456 (2000) and IS 13920 (2016) principles.")
+    st.caption("Notes: All calculations follow IS 456 (2000) and IS 13920 (2016) principles.")
 
 if __name__ == "__main__":
     main()
