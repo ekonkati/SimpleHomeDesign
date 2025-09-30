@@ -1,16 +1,3 @@
-# Landfill Design, Stability, Visualization & Submission App (Streamlit)
-# -------------------------------------------------------------------
-# **CRITICAL FIX: CLEANED & UNIFIED EXCAVATION PROFILE**
-# 1. Removed all extraneous "extension lines" (previously marked purple/X) from the plot.
-# 2. The "Outer Profile" (black line) for the excavation now directly follows the
-#    "Landfill Inner Profile" (blue line) in the below-ground section,
-#    starting its inward slope from the Top of Bund (TOB) level down to the base.
-# 3. All previous fixes (NameError, TypeError, KML, Min Top Area, BBL Inward Slope, Refined Excavation Profile) are retained.
-#
-# To run:
-#   pip install streamlit numpy pandas matplotlib reportlab simplekml shapely plotly XlsxWriter openpyxl
-#   streamlit run landfill_streamlit_app.py
-
 import io
 import math
 import json
@@ -179,6 +166,7 @@ def compute_bbl_abl(
         if A_next_toe_potential < A_min:
             R = current_L / current_W if current_W > 1e-6 else 1.0
             W_TOL_final = math.sqrt(A_min / R)
+            L_TOL_final = W_TOL_final * R
             h_cap = (current_W - W_TOL_final) / (2.0 * m_fill)
             if h_cap <= 1e-3: break 
             h_fill = min(h_cap, remaining_H)
@@ -207,7 +195,7 @@ def compute_bbl_abl(
                 L_next_crest = max(current_L - 2.0 * W_int_berm, 0.0)
                 if W_next_crest < 1e-3 or L_next_crest < 1e-3: break
                 abl_sections.append({"Z_base": current_Z, "Z_top": current_Z, "W_base": current_W, "L_base": current_L, "W_top": W_next_crest, "L_top": L_next_crest, "V": 0.0, "Type": "Berm"})
-                current_W, current_L = W_next_crest, current_L
+                current_W, current_L = W_next_crest, L_next_crest
     
     W_TOL_final = current_W; L_TOL_final = current_L; A_TOL_final = W_TOL_final * L_TOL_final
     H_actual_above = current_Z - Hb
@@ -222,8 +210,7 @@ def compute_bbl_abl(
     
     # Native Soil Excavated (for BOQ) - volume of soil removed to create the pit
     # This goes from GL width (W_GL) down to the base excavation width at depth D, but for the outer soil profile.
-    # For now, let's assume the outer excavation exactly follows the inner landfill profile for the BOQ calculation.
-    # So, the excavation profile goes from W_GL at GL down to W_Base at -D.
+    # So, the excavation profile goes from W_GL at GL down to W_Base at -D. (V_Base_to_GL)
     V_Native_Soil_Excavated_Approx = frustum_volume(D, A_Base, A_GL)
 
 
@@ -244,7 +231,7 @@ def compute_bbl_abl(
 
 def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: float) -> dict:
     D, Hb, bc = bblabl["D"], bblabl["Hb"], bblabl["bc"]
-    W_Base, W_GL, W_TOB, W_TOL = bblabl["W_Base"], bblabl["L_GL"], bblabl["W_TOB"], bblabl["W_TOL"]
+    W_Base, W_GL, W_TOB, W_TOL = bblabl["W_Base"], bblabl["W_GL"], bblabl["W_TOB"], bblabl["W_TOL"]
     m_outer = outside_slope_h_geom
     z0, z1, z2 = -D, 0.0, Hb
     Z_TOL = z2 + bblabl["H_above"]
@@ -274,39 +261,30 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
             x_in_right.append(section["W_top"] / 2.0) # End of berm
             z_in_right.append(section["Z_top"])
     if not (x_in_right[-1] == W_TOL / 2.0 and z_in_right[-1] == Z_TOL):
-         x_in_right.append(W_TOL / 2.0)
-         z_in_right.append(Z_TOL)
+          x_in_right.append(W_TOL / 2.0)
+          z_in_right.append(Z_TOL)
     x_in_left = [-x for x in x_in_right]; z_in_left = z_in_right
 
-    # 2. Outer Profile (Native Soil Excavation & Outer Bund)
-    # The outer soil profile in the excavation section (below TOB) should follow the inner profile.
-    # The outer bund section (above GL) uses the outer slope.
-
-    # Points for the outer profile (black line)
+    # 2. Outer Profile (Native Soil Excavation & Outer Bund) - Black Line
     x_outer_right = []
     z_outer_right = []
-
-    # 2a. Excavation section (below TOB) - follow inner profile from TOB down to Base
-    # Note: the inner profile points include GL, so we use those as references.
     
-    # Start at TOB outer crest (W_outer_crest_tob) if Hb > 0, otherwise start at GL.
-    if Hb > 0:
-        # From outer TOB crest (x_outer_crest_tob) to GL width (W_GL) - this is the outer bund slope
-        x_outer_right.append(bblabl["W_outer_crest_tob"] / 2.0)
-        z_outer_right.append(z2) # At TOB level
-        
-        # From outer bund toe at GL (W_outer_toe_gl) to GL
-        # This point exists if there's an outer slope from GL to TOB
-        x_outer_right.append(bblabl["W_GL"] / 2.0) # The GL width for the inner profile
-        z_outer_right.append(z1) # At GL
-    else: # If no bund, TOB is at GL
-        x_outer_right.append(bblabl["W_GL"] / 2.0)
-        z_outer_right.append(z1)
-    
-    # Then from GL down to base, the outer profile follows the inner profile's excavation slope
-    # So, from W_GL at GL down to W_Base at depth D
-    x_outer_right.append(bblabl["W_Base"] / 2.0)
+    # Start at the Base toe (W_Base/2.0, z0)
+    x_outer_right.append(W_Base / 2.0)
     z_outer_right.append(z0)
+    
+    # Go up to the GL inner width (W_GL/2.0, z1) - SHARED EXCAVATION PROFILE (Base to GL)
+    x_outer_right.append(W_GL / 2.0)
+    z_outer_right.append(z1)
+    
+    if Hb > 0:
+        # Go from GL inner width to Outer Toe (W_outer_toe_gl/2.0, z1) - horizontal/berm toe segment at GL
+        x_outer_right.append(bblabl["W_outer_toe_gl"] / 2.0)
+        z_outer_right.append(z1)
+
+        # Go up to Outer Crest (W_outer_crest_tob/2.0, z2) - outer bund slope
+        x_outer_right.append(bblabl["W_outer_crest_tob"] / 2.0)
+        z_outer_right.append(z2)
     
     x_outer_left = [-x for x in x_outer_right]
     z_outer_left = z_outer_right
@@ -315,6 +293,10 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
     x_outer_top_bund_plateau = [-bblabl["W_outer_crest_tob"] / 2.0, bblabl["W_outer_crest_tob"] / 2.0]
     z_outer_top_bund_plateau = [z2, z2]
     
+    # BBL Excavation Profile (Yellow line - visually mark the shared excavation Base to GL)
+    x_shared_excavation_right = [W_Base / 2.0, W_GL / 2.0]
+    z_shared_excavation_right = [z0, z1]
+    
     return {
         "x_in_left": x_in_left, "z_in_left": z_in_left, "x_in_right": x_in_right, "z_in_right": z_in_right,
         "x_top_plateau": [-W_TOL / 2.0, W_TOL / 2.0], "z_top_plateau": [Z_TOL, Z_TOL],
@@ -322,51 +304,95 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
         "x_outer_left": x_outer_left, "z_outer_left": z_outer_left,
         "x_outer_right": x_outer_right, "z_outer_right": z_outer_right,
         "x_outer_top_bund_plateau": x_outer_top_bund_plateau, "z_outer_top_bund_plateau": z_outer_top_bund_plateau,
+        # New for BBL shared profile (Yellow line in image)
+        "x_bbl_excav_right": x_shared_excavation_right, "z_bbl_excav_right": z_shared_excavation_right,
+        "x_bbl_excav_left": [-x for x in x_shared_excavation_right], "z_bbl_excav_left": z_shared_excavation_right,
         "base_area": bblabl["A_Base"], "side_area": 0, "plan_length_equiv": bblabl["L_GL"],
         "x_max_slope": bblabl["W_outer_crest_tob"] / 2.0, "z_min_slope": z0, "z_max_slope": Z_TOL,
     }
 
 def plot_cross_section(section: dict, title: str = "Cross-Section") -> bytes:
     fig, ax = plt.subplots(figsize=(8, 5))
+    
+    # 1. Inner Profile (Landfill Waste - Blue line)
     ax.plot(section["x_in_left"], section["z_in_left"], marker='o', linestyle='-', color='b', label="Landfill Inner Profile")
     ax.plot(section["x_in_right"], section["z_in_right"], marker='o', linestyle='-', color='b')
     ax.plot(section["x_top_plateau"], section["z_top_plateau"], linestyle='-', color='b')
     ax.plot(section["x_base_plateau"], section["z_base_plateau"], linestyle='-', color='b')
     
-    # Draw outer profile (Native Soil Boundary)
+    # 2. Outer Profile (Native Soil Boundary - Black line)
     ax.plot(section["x_outer_right"], section["z_outer_right"], linestyle='-', color='k', label="Outer Profile")
     ax.plot(section["x_outer_left"], section["z_outer_left"], linestyle='-', color='k')
-    ax.plot(section["x_outer_top_bund_plateau"], section["z_outer_top_bund_plateau"], linestyle='-', color='k') # Top of outer bund
     
+    # 3. Outer Bund Top Crest (Horizontal black line at TOB)
+    if section["z_outer_right"] and section["z_outer_right"][-1] > 1e-3: 
+        ax.plot(section["x_outer_top_bund_plateau"], section["z_outer_top_bund_plateau"], linestyle='-', color='k') 
+    
+    # 4. BBL Excavation Profile (Yellow line - visually mark the shared excavation Base to GL)
+    ax.plot(section["x_bbl_excav_right"], section["z_bbl_excav_right"], linestyle='-', color='y', linewidth=3)
+    ax.plot(section["x_bbl_excav_left"], section["z_bbl_excav_left"], linestyle='-', color='y', linewidth=3)
+    
+    # 5. Reference Lines
     ax.axhline(0, color='g', linewidth=1.5, linestyle=':', label="Ground Level (GL)")
-    # TOB is at Hb (z2), which is the third z-coordinate in z_in_right
-    if len(section["z_in_right"]) > 2: # Ensure TOB is defined
+    # TOB is at Hb (z2), which is the third z-coordinate in z_in_right if Hb > 0
+    if len(section["z_in_right"]) > 2 and section["z_in_right"][2] > 1e-3: 
         ax.axhline(section["z_in_right"][2], color='r', linewidth=0.8, linestyle='--', label="Top of Bund (TOB)")
-    else: # Fallback if TOB is at GL
+    else: 
         ax.axhline(0, color='r', linewidth=0.8, linestyle='--', label="Top of Bund (TOB) (at GL)")
     
+    # 6. Final Plot Setup
     ax.set_xlabel("x (m)"); ax.set_ylabel("z (m)"); ax.set_title(title); ax.grid(True, alpha=0.3)
     ax.legend(loc='upper left'); ax.axis('equal')
     buf = io.BytesIO(); fig.savefig(buf, format="png", bbox_inches="tight", dpi=150); plt.close(fig)
     return buf.getvalue()
 
 def grid_search_bishop(section, stab, n_slices=72) -> Tuple[float, dict, pd.DataFrame]:
+    # Placeholder for actual stability analysis
     return 1.5, {"FoS": 1.5, "cx": 0.0, "cz": -10.0, "r": 50.0}, pd.DataFrame({"Slice": [1, 2], "FoS": [1.5, 1.6]})
 
 def compute_boq(section: dict, liner: dict, rates: dict, A_base_for_liner: float, V_earthworks_approx: float, V_Bund_Soil_Approx: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
     total_capacity = st.session_state.get("V_total", 1000000)
-    total_cost = 1500000 + total_capacity * rates["HDPE liner install"]
-    df = pd.DataFrame({"Item": ["Liner", "Earth"], "Quantity": [10000, 5000], "Unit": ["m²", "m³"], "Rate (₹)": [350, 180], "Amount (₹)": [3500000, 900000]})
-    summary = pd.DataFrame({"Metric": ["Total capital cost", "Waste capacity (m³)", "Cost per m³ (₹/m³)"], "Value": [total_cost, total_capacity, total_cost / max(total_capacity, 1e-6)]})
+    # Simple placeholder calculation for cost
+    liner_area_approx = A_base_for_liner + V_earthworks_approx / 5 # crude estimate
+    cost_liner = liner_area_approx * rates.get("HDPE liner install", 0)
+    cost_earth = (V_earthworks_approx + V_Bund_Soil_Approx) * rates.get("Earthworks (cut/fill) (Total Vol)", 0)
+    total_cost = 500000 + cost_liner + cost_earth 
+
+    df = pd.DataFrame({
+        "Item": ["Waste Capacity", "Liner System (m²)", "Earthworks (m³)", "Bund Soil (m³)", "Total Cost"], 
+        "Quantity": [total_capacity, liner_area_approx, V_earthworks_approx, V_Bund_Soil_Approx, total_cost], 
+        "Unit": ["m³", "m²", "m³", "m³", "₹"], 
+        "Rate (₹)": [0, rates.get("HDPE liner install", 0), rates.get("Earthworks (cut/fill) (Total Vol)", 0), rates.get("Earthworks (cut/fill) (Total Vol)", 0), 1.0], 
+        "Amount (₹)": [0, cost_liner, V_earthworks_approx * rates.get("Earthworks (cut/fill) (Total Vol)", 0), V_Bund_Soil_Approx * rates.get("Earthworks (cut/fill) (Total Vol)", 0), total_cost]
+    })
+    
+    summary = pd.DataFrame({
+        "Metric": ["Total capital cost (₹)", "Waste capacity (m³)", "Cost per m³ (₹/m³)"], 
+        "Value": [f"{total_cost:,.0f}", f"{total_capacity:,.0f}", f"{total_cost / max(total_capacity, 1e-6):,.2f}"]
+    })
     return df, summary
 
 def export_excel(inputs: dict, section: dict, bblabl: dict, boq: pd.DataFrame, summary: pd.DataFrame) -> bytes:
-    return io.BytesIO(b"Excel content").getvalue()
+    # Placeholder for actual Excel export
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        input_df = pd.DataFrame(inputs.items(), columns=['Parameter', 'Value'])
+        input_df.to_excel(writer, sheet_name='Inputs', index=False)
+        
+        bblabl_df = pd.DataFrame(bblabl.items(), columns=['Metric', 'Value'])
+        bblabl_df.to_excel(writer, sheet_name='Geometry_Results', index=False)
+        
+        boq.to_excel(writer, sheet_name='BOQ', index=False)
+        summary.to_excel(writer, sheet_name='Cost_Summary', index=False)
+    
+    return output.getvalue()
 
 def plotly_3d_full_stack(bblabl: dict, avg_ground_rl: float):
     if go is None: return None
+    # This function is a placeholder and would require significant work to create the actual 3D stack based on the trapezoidal geometry.
+    # We will return a simple empty figure to avoid errors while preserving the intent.
     fig = go.Figure()
-    fig.update_layout(title="3D Landfill (Stepped ABL)", height=600,
+    fig.update_layout(title="3D Landfill (Stepped ABL) - Placeholder", height=600,
                       scene=dict(xaxis_title="Easting (m)", yaxis_title="Northing (m)", zaxis_title="RL (m)", aspectmode="cube"),
                       showlegend=True)
     return fig
