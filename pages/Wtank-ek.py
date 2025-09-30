@@ -8,8 +8,10 @@ from typing import Optional, Tuple, List, Dict
 import numpy as np
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon
+# REMOVED: import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
 
 # ===============================
 # Global Constants
@@ -20,9 +22,6 @@ M_TO_MM = 1000.0
 # Set Streamlit page configuration for wide layout
 st.set_page_config(layout="wide")
 
-# Enable LaTeX rendering for Matplotlib texts (using cm font for math)
-plt.rcParams['text.usetex'] = False 
-plt.rcParams['mathtext.fontset'] = 'cm'
 
 # ===============================
 # Data Classes (Default values added)
@@ -156,72 +155,53 @@ def import_inputs(json_data: str) -> Tuple[Materials, Geometry, Loads]:
     return mat, geom, loads
 
 # ===============================
-# Plotting Functions (FIXED Mathtext Errors)
+# Plotting Functions (Plotly Implementation)
 # ===============================
 
 def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
-    """Plots the load diagram (Hydrostatic and Earth Pressure) with enhanced scaling and formatting."""
-    
-    # ----------------------------------------------------
-    # 1. Setup and Dimensions
-    # ----------------------------------------------------
-    fig, ax = plt.subplots(figsize=(8, 6)) 
+    """Plots the load diagram (Hydrostatic and Earth Pressure) using Plotly."""
     
     H_wall = geom.H
     t_base = geom.t_base
     H_total = H_wall + t_base
     
-    # Pressures
     P_max_w = loads.gamma_w * H_wall
     P_max_s = 0
     
-    # Format numbers outside of the Mathtext string
     P_max_w_str = f'{P_max_w:.1f}'
     R_liq_str = f'{R_liq:.1f}'
     R_soil_str = f'{R_soil:.1f}'
+    
+    fig = go.Figure()
 
+    # --- 1. Draw the Wall and Base Geometry (Profile View) ---
+    # Wall profile (Vertical line)
+    fig.add_trace(go.Scatter(x=[0, 0], y=[0, H_total], mode='lines', line=dict(color='black', width=3), name='Wall'))
+    # Base Slab profile (Horizontal line)
+    fig.add_trace(go.Scatter(x=[-0.5, 1], y=[0, 0], mode='lines', line=dict(color='black', width=3), name='Base Slab'))
+    # Top of base line (t_base)
+    fig.add_trace(go.Scatter(x=[-0.5, 0], y=[t_base, t_base], mode='lines', line=dict(color='gray', width=1, dash='dot'), showlegend=False))
 
-    # ----------------------------------------------------
-    # 2. Draw the Wall and Base Geometry (Profile View)
-    # ----------------------------------------------------
-    
-    # Draw Wall Profile
-    ax.plot([0, 0], [0, H_total], color='k', linewidth=3, label='Wall')
-    
-    # Draw Base Slab Profile (extending slightly left for soil load illustration)
-    ax.plot([-0.5, 1], [0, 0], color='k', linewidth=3, label='Base Slab')
-    ax.plot([-0.5, 0], [t_base, t_base], color='k', linestyle=':', linewidth=1) # Top of base line
-    
-    # Dimensioning the Wall Height H
-    ax.arrow(-0.3, H_total, 0, -H_wall, head_width=0.05, head_length=0.1, fc='gray', ec='gray', length_includes_head=True)
-    ax.text(-0.35, t_base + H_wall / 2, r'$H$', color='gray', ha='right')
-    
-    # Dimensioning the Base Slab Thickness t_base
-    ax.arrow(-0.3, 0.05, 0, t_base - 0.1, head_width=0.05, head_length=0.1, fc='gray', ec='gray', length_includes_head=True)
-    ax.text(-0.35, t_base / 2, r'$t_{base}$', color='gray', ha='right')
-
-    # ----------------------------------------------------
-    # 3. Hydrostatic Pressure (P_w) - Acting on inner face (right)
-    # ----------------------------------------------------
+    # --- 2. Hydrostatic Pressure (P_w) - Inner Face (Right) ---
     x_w = [0, P_max_w, 0]
     y_w = [t_base, t_base, H_total]
-    ax.fill_betweenx([t_base, H_total], [0, P_max_w], 0, color='b', alpha=0.3, label='Water Pressure')
-    ax.plot(x_w, y_w, color='b', linestyle='--') 
+    fig.add_trace(go.Scatter(x=x_w, y=y_w, mode='lines', fill='toself', fillcolor='rgba(0,0,255,0.3)', line=dict(color='blue', dash='dash'), name='Water Pressure'))
     
-    # Pressure magnitude label (Pmax) - FIX: Use single f-string with double backslashes
-    ax.text(P_max_w * 1.05, t_base + 0.1, 
-            f'$P_{{w, \\max}} = {P_max_w_str}\\ \\mathrm{{kN/m^2}}$', 
-            color='b', fontsize=10)
+    # Pressure magnitude label (Pmax) - Use HTML for sub/superscript
+    fig.add_annotation(
+        x=P_max_w * 1.05, y=t_base + 0.1, 
+        text=f"P<sub>w, max</sub> = {P_max_w_str} kN/m<sup>2</sup>",
+        showarrow=False, font=dict(color='blue', size=10), xanchor='left'
+    )
     
-    # Resultant force label (R_w) - FIX: Use single f-string with double backslashes
-    ax.arrow(P_max_w * 0.5, t_base + H_wall/3, -0.05, 0, head_width=0.1, head_length=0.1, fc='b', ec='b')
-    ax.text(P_max_w * 0.5, t_base + H_wall/3 + 0.2, 
-            f'$R_w = {R_liq_str}\\ \\mathrm{{kN/m}}$', 
-            color='b', ha='center', fontsize=10)
+    # Resultant force label (R_w)
+    fig.add_annotation(
+        x=P_max_w * 0.5, y=t_base + H_wall/3 + 0.2, 
+        text=f"R<sub>w</sub> = {R_liq_str} kN/m",
+        showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1, arrowcolor='blue', ax=-20, ay=0, font=dict(color='blue', size=10), yshift=0
+    )
 
-    # ----------------------------------------------------
-    # 4. Earth Pressure (P_soil) - Acting on outer face (left)
-    # ----------------------------------------------------
+    # --- 3. Earth Pressure (P_soil) - Outer Face (Left) ---
     if geom.tank_type == "Ground":
         P_max_s = loads.gamma_s * loads.K0 * H_total
         P_max_s_str = f'{P_max_s:.1f}'
@@ -229,116 +209,136 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
         x_s = [-P_max_s, 0, 0]
         y_s = [0, 0, H_total]
         
-        ax.fill_betweenx([0, H_total], [-P_max_s, 0], 0, color='brown', alpha=0.3, label='Earth Pressure')
-        ax.plot(x_s, y_s, color='brown', linestyle='--')
+        fig.add_trace(go.Scatter(x=x_s, y=y_s, mode='lines', fill='toself', fillcolor='rgba(139,69,19,0.3)', line=dict(color='brown', dash='dash'), name='Earth Pressure'))
         
-        # Pressure magnitude label (Pmax) - FIX: Use single f-string with double backslashes
-        ax.text(-P_max_s * 1.05, 0.1, 
-                f'$P_{{s, \\max}} = {P_max_s_str}\\ \\mathrm{{kN/m^2}}$', 
-                color='brown', ha='right', fontsize=10)
+        # Pressure magnitude label (Pmax)
+        fig.add_annotation(
+            x=-P_max_s * 1.05, y=0.1, 
+            text=f"P<sub>s, max</sub> = {P_max_s_str} kN/m<sup>2</sup>", 
+            showarrow=False, font=dict(color='brown', size=10), xanchor='right'
+        )
         
-        # Resultant force label (R_s) - FIX: Use single f-string with double backslashes
-        ax.arrow(-P_max_s * 0.5, H_total/3, 0.05, 0, head_width=0.1, head_length=0.1, fc='brown', ec='brown')
-        ax.text(-P_max_s * 0.5, H_total/3 + 0.2, 
-                f'$R_s = {R_soil_str}\\ \\mathrm{{kN/m}}$', 
-                color='brown', ha='center', fontsize=10)
+        # Resultant force label (R_s)
+        fig.add_annotation(
+            x=-P_max_s * 0.5, y=H_total/3 + 0.2, 
+            text=f"R<sub>s</sub> = {R_soil_str} kN/m", 
+            showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1, arrowcolor='brown', ax=20, ay=0, font=dict(color='brown', size=10), yshift=0
+        )
 
-    # ----------------------------------------------------
-    # 5. Formatting and Display
-    # ----------------------------------------------------
-    ax.set_title(
-        f"Load Diagram (Wall Profile: L={geom.L:.1f}m, B={geom.B:.1f}m)",
-        fontsize=12, fontweight='bold'
+    # --- 4. Dimensioning H and t_base ---
+    fig.add_annotation(x=-0.35, y=t_base + H_wall / 2, text='H', showarrow=False, font=dict(color='gray'), xanchor='right')
+    fig.add_annotation(x=-0.35, y=t_base / 2, text='t<sub>base</sub>', showarrow=False, font=dict(color='gray'), xanchor='right')
+
+
+    # --- 5. Formatting and Display ---
+    x_limit = max(abs(P_max_s), abs(P_max_w)) * 1.5 if geom.tank_type == "Ground" else P_max_w * 1.5
+    
+    fig.update_layout(
+        title=f"<b>Load Diagram (Wall Profile: L={geom.L:.1f}m, B={geom.B:.1f}m)</b>",
+        xaxis=dict(
+            title="Pressure (Scaled &larr; Soil | Water &rarr;)", # HTML arrows for direction
+            zeroline=True, 
+            zerolinecolor='black', 
+            zerolinewidth=2,
+            gridcolor='lightgray',
+            range=[-x_limit, x_limit]
+        ),
+        yaxis=dict(
+            title="Height from Base (m)",
+            range=[-0.2, H_total + 0.5],
+            zeroline=True,
+            showticklabels=True,
+            tickvals=sorted(list(set([0, t_base, H_total]))),
+            gridcolor='lightgray',
+            scaleanchor="x",
+            scaleratio= (x_limit * 2) / (H_total + 0.7) if x_limit > 0 else 1.0
+        ),
+        showlegend=True,
+        legend=dict(x=0.5, y=1.05, xanchor='center', orientation='h', traceorder='normal'),
+        height=600,
+        margin=dict(l=50, r=50, t=80, b=50)
     )
-    ax.set_xlabel("Pressure (Scaled $\leftarrow$ Soil | Water $\rightarrow$)", fontsize=10)
-    ax.set_ylabel("Height from Base (m)", fontsize=10)
-    
-    # Set limits based on pressures and dimensions
-    x_limit = max(abs(P_max_s), abs(P_max_w)) * 1.5 
-    ax.set_xlim(-x_limit, x_limit)
-    ax.set_ylim(-0.2, H_total + 0.5)
-    
-    ax.grid(True, linestyle=':', alpha=0.6)
-    ax.set_aspect('equal', adjustable='box')
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.05), ncol=2, frameon=False)
-    
-    # Hide the y-axis ticks and spines to make the wall itself the central reference
-    ax.yaxis.tick_left()
-    ax.spines['left'].set_position('zero')
-    ax.spines['right'].set_visible(False)
-    ax.spines['top'].set_visible(False)
-    
-    # Set y-tick marks at H and t_base for clarity
-    ax.set_yticks(sorted(list(set([0, t_base, H_total]))))
 
-    st.pyplot(fig)
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
-    """Plots the Bending Moment and Shear Force Diagrams."""
+    """Plots the Bending Moment and Shear Force Diagrams using Plotly."""
     
-    # Format numbers outside of the Mathtext string
     V_max_str = f'{V_base_max:.1f}'
     M_L_str = f'{M_base_L:.1f}'
     M_B_str = f'{M_base_B:.1f}'
 
-    # Shear Force (Common for both walls)
-    fig_v, ax_v = plt.subplots(figsize=(3.5, 6))
-    ax_v.plot([0, V_base_max, 0], [0, 0, H], 'r-', linewidth=2)
-    ax_v.fill([0, V_base_max, 0], [0, 0, H], 'r', alpha=0.2)
-    ax_v.plot([0, 0], [0, H], 'k--')
-    # FIX: Use single f-string with double backslashes
-    ax_v.text(V_base_max * 1.1, 0.05, 
-              f'$V_{{max}} = {V_max_str}\\ \\mathrm{{kN/m}}$', 
-              color='r', fontsize=10)
-    ax_v.set_title("Shear Force ($V$)", fontsize=12)
-    ax_v.set_xlabel("Shear (kN/m)", fontsize=10)
-    ax_v.set_ylabel("Height (m)", fontsize=10)
-    ax_v.set_ylim(-0.1, H + 0.1)
-    ax_v.grid(True, linestyle='--', alpha=0.6)
+    def create_plotly_plot(title: str, x_values: List[float], y_values: List[float], label_text: str, color: str) -> go.Figure:
+        fig = go.Figure()
+        
+        # Plot the distribution (triangle)
+        fig.add_trace(go.Scatter(
+            x=x_values, y=y_values, 
+            mode='lines', 
+            fill='toself', 
+            fillcolor=f'rgba({tuple(int(color.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))}, 0.2)', # Convert hex to rgba
+            line=dict(color=color, width=2),
+            showlegend=False
+        ))
+        
+        # Reference line (wall center)
+        fig.add_trace(go.Scatter(x=[0, 0], y=[0, H], mode='lines', line=dict(color='black', dash='dash'), showlegend=False))
+        
+        # Label (max value at the bottom)
+        fig.add_annotation(
+            x=x_values[1] * 1.1, y=0.05, 
+            text=label_text, 
+            showarrow=False, 
+            font=dict(color=color, size=10), 
+            xanchor='left'
+        )
+        
+        fig.update_layout(
+            title=f"<b>{title}</b>",
+            xaxis=dict(title=title.split('(')[0] + ' (kN/m or kNm/m)', zeroline=True, gridcolor='lightgray', range=[-0.1 * max(x_values), max(x_values) * 1.3]),
+            yaxis=dict(title="Height (m)", range=[-0.1, H + 0.1], zeroline=True, gridcolor='lightgray'),
+            height=600,
+            margin=dict(l=40, r=40, t=40, b=40)
+        )
+        
+        return fig
+
+    # Shear Force
+    fig_v = create_plotly_plot(
+        title="Shear Force (V)",
+        x_values=[0, V_base_max, 0], 
+        y_values=[0, 0, H], 
+        label_text=f"V<sub>max</sub> = {V_max_str} kN/m",
+        color='#FF0000' # Red
+    )
 
     # Bending Moment - Long Wall (L)
-    fig_m_L, ax_m_L = plt.subplots(figsize=(3.5, 6))
-    x_m_L = [0, M_base_L, 0]
-    y_m_L = [0, 0, H]
-    ax_m_L.plot(x_m_L, y_m_L, 'b-', linewidth=2)
-    ax_m_L.fill(x_m_L, y_m_L, 'b', alpha=0.2)
-    ax_m_L.plot([0, 0], [0, H], 'k--')
-    # FIX: Use single f-string with double backslashes
-    ax_m_L.text(M_base_L * 1.1, 0.05, 
-                f'$M_L = {M_L_str}\\ \\mathrm{{kNm/m}}$', 
-                color='b', fontsize=10)
-    ax_m_L.set_title("Moment - Long Wall ($M_L$)", fontsize=12)
-    ax_m_L.set_xlabel("Moment (kNm/m)", fontsize=10)
-    ax_m_L.set_ylabel("Height (m)", fontsize=10)
-    ax_m_L.set_ylim(-0.1, H + 0.1)
-    ax_m_L.grid(True, linestyle='--', alpha=0.6)
-    
-    # Bending Moment - Short Wall (B)
-    fig_m_B, ax_m_B = plt.subplots(figsize=(3.5, 6))
-    x_m_B = [0, M_base_B, 0]
-    y_m_B = [0, 0, H]
-    ax_m_B.plot(x_m_B, y_m_B, 'g-', linewidth=2)
-    ax_m_B.fill(x_m_B, y_m_B, 'g', alpha=0.2)
-    ax_m_B.plot([0, 0], [0, H], 'k--')
-    # FIX: Use single f-string with double backslashes
-    ax_m_B.text(M_base_B * 1.1, 0.05, 
-                f'$M_B = {M_B_str}\\ \\mathrm{{kNm/m}}$', 
-                color='g', fontsize=10)
-    ax_m_B.set_title("Moment - Short Wall ($M_B$)", fontsize=12)
-    ax_m_B.set_xlabel("Moment (kNm/m)", fontsize=10)
-    ax_m_B.set_ylabel("Height (m)", fontsize=10)
-    ax_m_B.set_ylim(-0.1, H + 0.1)
-    ax_m_B.grid(True, linestyle='--', alpha=0.6)
+    fig_m_L = create_plotly_plot(
+        title="Moment - Long Wall (M<sub>L</sub>)",
+        x_values=[0, M_base_L, 0], 
+        y_values=[0, 0, H], 
+        label_text=f"M<sub>L</sub> = {M_L_str} kNm/m",
+        color='#0000FF' # Blue
+    )
 
+    # Bending Moment - Short Wall (B)
+    fig_m_B = create_plotly_plot(
+        title="Moment - Short Wall (M<sub>B</sub>)",
+        x_values=[0, M_base_B, 0], 
+        y_values=[0, 0, H], 
+        label_text=f"M<sub>B</sub> = {M_B_str} kNm/m",
+        color='#008000' # Green
+    )
 
     col_v, col_m_l, col_m_b = st.columns(3)
     with col_v:
-        st.pyplot(fig_v)
+        st.plotly_chart(fig_v, use_container_width=True)
     with col_m_l:
-        st.pyplot(fig_m_L)
+        st.plotly_chart(fig_m_L, use_container_width=True)
     with col_m_b:
-        st.pyplot(fig_m_B)
+        st.plotly_chart(fig_m_B, use_container_width=True)
+
 
 # ===============================
 # Streamlit App Execution (Inline)
@@ -425,7 +425,7 @@ st.markdown("---")
 
 # --- LOAD CALCULATION SECTION ---
 st.header("2. Basic Load Calculations and Sketches")
-st.markdown(f"The aspect ratio $\\frac{{L}}{{H}} = \\frac{{{geom.L}}}{{{geom.H}}} = **{L_over_H:.2f}**$ is used to determine plate bending coefficients (IS 3370-4).")
+st.markdown(f"The aspect ratio $L/H = {geom.L}/{geom.H} = **{L_over_H:.2f}**$ is used to determine plate bending coefficients (IS 3370-4).")
 
 # Hydrostatic Load (FL)
 R_liq, zbar_liq = triangular_resultant(loads.gamma_w, geom.H)
@@ -443,7 +443,7 @@ st.markdown(f"**Hydrostatic Pressure:** $P_{{max, w}} = **{P_max_w:.2f} \text{{ 
 if geom.tank_type == "Ground":
     st.markdown(f"**Earth Pressure:** $P_{{max, s}} = **{P_max_s:.2f} \text{{ kN/m}}^2**$, Resultant $R_{{s}} = **{R_soil:.2f} \text{{ kN/m}}$**")
 
-st.subheader("2.2 Load Sketch")
+st.subheader("2.2 Load Sketch (Plotly Diagram)")
 plot_loads(geom, loads, R_liq, R_soil)
 
 st.markdown("---")
@@ -543,7 +543,7 @@ st.markdown("---")
 # --- DETAILING & DRAWING SECTION ---
 st.header("5. Output Diagrams and Detailing Suggestions")
 
-st.subheader("5.1 Design Output Diagrams")
+st.subheader("5.1 Design Output Diagrams (Plotly)")
 st.markdown("These diagrams show the Shear Force (common) and Bending Moment distributions for the Long and Short Walls, based on unfactored moments ($M_{FL}$).")
 # Pass unfactored moments for plotting shape representation
 plot_results(geom.H, M_base_mid_L_FL, M_base_mid_B_FL, V_base_FL)
