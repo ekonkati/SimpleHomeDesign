@@ -8,7 +8,6 @@ from typing import Optional, Tuple, List, Dict
 import numpy as np
 import pandas as pd
 import streamlit as st
-# REMOVED: import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -272,12 +271,17 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     def create_plotly_plot(title: str, x_values: List[float], y_values: List[float], label_text: str, color: str) -> go.Figure:
         fig = go.Figure()
         
+        # --- FIX: Convert Hex to RGBA string correctly ---
+        rgb_str = ','.join(str(int(color.lstrip("#")[i:i+2], 16)) for i in (0, 2, 4))
+        fill_color_rgba = f'rgba({rgb_str}, 0.2)'
+        # --- END FIX ---
+        
         # Plot the distribution (triangle)
         fig.add_trace(go.Scatter(
             x=x_values, y=y_values, 
             mode='lines', 
             fill='toself', 
-            fillcolor=f'rgba({tuple(int(color.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))}, 0.2)', # Convert hex to rgba
+            fillcolor=fill_color_rgba,
             line=dict(color=color, width=2),
             showlegend=False
         ))
