@@ -167,10 +167,10 @@ def export_inputs(mat: Materials, geom: Geometry, loads: Loads) -> str:
 def import_inputs(json_data: str) -> Tuple[Materials, Geometry, Loads]:
     """Deserializes JSON string into DataClass objects."""
     data = json.loads(json_data)
-    # Ensure all required keys exist before unpacking
-    mat = Materials(**data["Materials"])
-    geom = Geometry(**data["Geometry"])
-    loads = Loads(**data["Loads"])
+    # Instantiate DataClasses safely
+    mat = Materials(**data.get("Materials", {}))
+    geom = Geometry(**data.get("Geometry", {}))
+    loads = Loads(**data.get("Loads", {}))
     return mat, geom, loads
 
 # ===============================
@@ -237,6 +237,7 @@ def plot_results(H: float, M_base_max: float, V_base_max: float):
 
     # Bending Moment
     fig_m, ax_m = plt.subplots(figsize=(4, 6))
+    # Moment shape is not purely triangular, but a simplified shape is used for illustration
     x_m = [0, M_base_max, 0]
     y_m = [0, 0, H]
     ax_m.plot(x_m, y_m, 'b-', linewidth=2)
@@ -263,7 +264,7 @@ st.title("💧 RCC Water Tank Design and Analysis (IS 3370 / IS 456)")
 st.markdown("---")
 
 # --- INITIALIZATION (FIXED LOCATION) ---
-# Initialize session state for holding input objects, ensuring keys exist.
+# Initialize session state for holding input objects, ensuring keys exist from the start.
 if 'mat' not in st.session_state:
     st.session_state.mat = Materials()
     st.session_state.geom = Geometry()
@@ -350,9 +351,9 @@ R_liq, zbar_liq = triangular_resultant(loads.gamma_w, geom.H)
 P_max_w = loads.gamma_w * geom.H
 st.markdown(f"""
 The hydrostatic pressure is triangular, with maximum pressure $P_{{max, w}}$ at the base (height $H$):
-$$P_{{max, w}} = \gamma_w \cdot H = {loads.gamma_w:.2f} \cdot {geom.H:.2f} = **{P_max_w:.2f} \text{ kN/m}^2$$
+$$P_{{max, w}} = \gamma_w \cdot H = {loads.gamma_w:.2f} \cdot {geom.H:.2f} = **{P_max_w:.2f} \text{{ kN/m}}^2$$
 The total resultant force $R_{{w}}$ per metre run of the wall is:
-$$R_{{w}} = 0.5 \cdot P_{{max, w}} \cdot H = **{R_liq:.2f} \text{ kN/m}$$
+$$R_{{w}} = 0.5 \cdot P_{{max, w}} \cdot H = **{R_liq:.2f} \text{{ kN/m}}$$
 """)
 
 # 2.2 Earth Pressure (EL) - Only for Ground Tanks
@@ -364,9 +365,9 @@ if geom.tank_type == "Ground":
     M_soil_base = R_soil * zbar_soil
     st.markdown(f"""
     For the Ground Tank, the soil exerts a lateral force defined by the earth pressure at rest coefficient $K_0$:
-    $$P_{{max, s}} = \gamma_s \cdot K_0 \cdot (H + t_{{base}}) = {loads.gamma_s:.1f} \cdot {loads.K0:.2f} \cdot ({geom.H:.2f} + {geom.t_base:.2f}) = **{P_max_s:.2f} \text{ kN/m}^2$$
+    $$P_{{max, s}} = \gamma_s \cdot K_0 \cdot (H + t_{{base}}) = {loads.gamma_s:.1f} \cdot {loads.K0:.2f} \cdot ({geom.H:.2f} + {geom.t_base:.2f}) = **{P_max_s:.2f} \text{{ kN/m}}^2$$
     The total resultant force $R_{{s}}$ per metre run (acting over $H+t_{{base}}$) is:
-    $$R_{{s}} = 0.5 \cdot P_{{max, s}} \cdot (H + t_{{base}}) = **{R_soil:.2f} \text{ kN/m}$$
+    $$R_{{s}} = 0.5 \cdot P_{{max, s}} \cdot (H + t_{{base}}) = **{R_soil:.2f} \text{{ kN/m}}$$
     """)
 
 # 2.3 Load Sketch
@@ -400,9 +401,9 @@ st.markdown(f"**Calculated Aspect Ratio $L/H = {L_over_H:.2f}$**")
 st.markdown(f"Interpolated Coefficients (C): $C_{{corner}}={C_corner:.4f}$, $C_{{mid, L}}={C_mid_L:.4f}$, $C_{{mid, B}}={C_mid_B:.4f}$")
 
 st.markdown(f"""
-- **Maximum Corner Moment:** $M_{{corner}} = **{M_base_corner_FL:.2f} \text{ kNm/m}$**
-- **Mid-Long Wall Moment:** $M_{{mid, L}} = **{M_base_mid_L_FL:.2f} \text{ kNm/m}$**
-- **Mid-Short Wall Moment:** $M_{{mid, B}} = **{M_base_mid_B_FL:.2f} \text{ kNm/m}$**
+- **Maximum Corner Moment:** $M_{{corner}} = **{M_base_corner_FL:.2f} \text{{ kNm/m}}$**
+- **Mid-Long Wall Moment:** $M_{{mid, L}} = **{M_base_mid_L_FL:.2f} \text{{ kNm/m}}$**
+- **Mid-Short Wall Moment:** $M_{{mid, B}} = **{M_base_mid_B_FL:.2f} \text{{ kNm/m}}$**
 """)
 
 st.markdown("---")
@@ -428,7 +429,7 @@ Mu_max_design = max(Mu_design_FL, Mu_design_EL) if geom.tank_type == "Ground" el
 V_max_design = gamma_f_FL * V_base_FL
 
 st.subheader(f"4.1 ULS Design Moment and Shear")
-st.markdown(f"The maximum ULS Design Moment ($M_u$) is $\\approx **{Mu_max_design:.2f} \text{ kNm/m}$** (Governed by {('Empty/Soil' if Mu_design_EL > Mu_design_FL else 'Full/Water')} Condition).")
+st.markdown(f"The maximum ULS Design Moment ($M_u$) is $\\approx **{Mu_max_design:.2f} \text{{ kNm/m}}$** (Governed by {('Empty/Soil' if Mu_design_EL > Mu_design_FL else 'Full/Water')} Condition).")
 
 # 4.2 Required Steel Area (ULS Check)
 Ast_req_ULS = demand_ast_from_M(Mu_max_design, d_eff, mat.fy, mat.fck)
@@ -445,10 +446,10 @@ Ast_req_final = max(Ast_req_ULS, Ast_min_face)
 
 st.subheader("4.2 Vertical Reinforcement Requirement")
 st.markdown(f"""
-- Required $A_{{st}}$ from ULS Flexure ($M_u$): **{Ast_req_ULS:.0f} $\text{mm}^2/\text{m}$**
-- Minimum $A_{{st}}$ (IS 3370, {Ast_min_perc:.2f}% total): **{Ast_min_face:.0f} $\text{mm}^2/\text{m}$** (per face)
+- Required $A_{{st}}$ from ULS Flexure ($M_u$): **{Ast_req_ULS:.0f} $\text{{mm}}^2/\text{{m}}$**
+- Minimum $A_{{st}}$ (IS 3370, {Ast_min_perc:.2f}% total): **{Ast_min_face:.0f} $\text{{mm}}^2/\text{{m}}$** (per face)
 
-**Governing $A_{{st, req}}$ (Vertical) = {Ast_req_final:.0f} $\text{mm}^2/\text{m}$**
+**Governing $A_{{st, req}}$ (Vertical) = {Ast_req_final:.0f} $\text{{mm}}^2/\text{{m}}$**
 """)
 
 st.markdown("---")
@@ -473,11 +474,11 @@ sigma_s_actual = steel_stress_sls(Ms_design, d_eff, Ast_prov_mm2, mat.Ec)
 
 st.subheader("5.1 Stress Check for Water-Tightness")
 st.markdown(f"""
-- **Service Moment ($M_s$)** (Unfactored FL): **{Ms_design:.2f} $\text{kNm/m}$**
-- **Provided $A_{{st}}$** (Used for Check): **{Ast_prov_mm2:.0f} $\text{mm}^2/\text{m}$**
-- **Permissible $\sigma_{{s, allow}}$** (IS 3370-2): **{sigma_allow:.0f} $\text{MPa}$** (Assuming max bar dia $\le 16 \text{ mm}$)
+- **Service Moment ($M_s$)** (Unfactored FL): **{Ms_design:.2f} $\text{{kNm/m}}$**
+- **Provided $A_{{st}}$** (Used for Check): **{Ast_prov_mm2:.0f} $\text{{mm}}^2/\text{{m}}$**
+- **Permissible $\sigma_{{s, allow}}$** (IS 3370-2): **{sigma_allow:.0f} $\text{{MPa}}$** (Assuming max bar dia $\le 16 \text{{ mm}}$)
 
-**Calculated $\sigma_{{s, actual}}$ = {sigma_s_actual:.0f} $\text{MPa}$**
+**Calculated $\sigma_{{s, actual}}$ = {sigma_s_actual:.0f} $\text{{MPa}}$**
 
 **Result: $\sigma_{{s, actual}}$ {'≤' if sigma_s_actual <= sigma_allow else '>'} $\sigma_{{s, allow}}$ $\rightarrow$ **{'**✅ PASS** (Crack width controlled)' if sigma_s_actual <= sigma_allow else '**❌ FAIL** (Increase $t_{{w}}$ or $A_{{st}}$)'}**
 """)
@@ -493,12 +494,31 @@ plot_results(geom.H, Mu_max_design / gamma_f_FL, V_base_FL)
 
 st.subheader("6.2 Rebar Reduction and Curtailment Suggestions")
 st.markdown(f"""
-For a wall height $H = {geom.H:.1f} \text{ m}$, the vertical bending moment is maximum at the base and zero at the top. The required steel area $A_{{st}}$ decreases rapidly away from the base.
+For a wall height $H = {geom.H:.1f} \text{{ m}}$, the vertical bending moment is maximum at the base and zero at the top. The required steel area $A_{{st}}$ decreases rapidly away from the base.
 
 1.  **Curtailment Point:** The moment reduction means that the main tension reinforcement (designed for $M_u$) can be reduced or cut off where the moment $M(z)$ requires an $A_{{st}} < A_{{st, prov, upper}}$. A common practice is to allow a reduction in $A_{{st}}$ at a height of **$0.3H$ to $0.4H$** from the base, provided the remaining steel satisfies $A_{{st, min}}$ and sufficient development length ($L_d$) is provided beyond the theoretical cut-off point.
-    * *Suggestion:* Consider curtailing **half of the main bars** at approximately **$0.4 \times {geom.H} \approx {0.4*geom.H:.2f} \text{ m}$** from the base.
+    * *Suggestion:* Consider curtailing **half of the main bars** at approximately **$0.4 \times {geom.H} \approx {0.4*geom.H:.2f} \text{{ m}}$** from the base.
 
-2.  **Upper Zone Steel:** The top portion of the wall (e.g., above $0.6H$) is primarily subjected to $A_{{st, min}}$ due to temperature and shrinkage effects. The minimum steel **$A_{{st, min, face}} = {Ast_min_face:.0f} \text{ mm}^2/\text{m}$** should be maintained vertically and horizontally on both faces throughout this region.
+2.  **Upper Zone Steel:** The top portion of the wall (e.g., above $0.6H$) is primarily subjected to $A_{{st, min}}$ due to temperature and shrinkage effects. The minimum steel **$A_{{st, min, face}} = {Ast_min_face:.0f} \text{{ mm}}^2/\text{{m}}$** should be maintained vertically and horizontally on both faces throughout this region.
 
 3.  **Horizontal Steel:** Horizontal steel is crucial for resisting hoop tension (at the base for plate action) and controlling temperature/shrinkage cracks. It should not be curtailed based on the vertical moment diagram; it should generally be held at **$A_{{st, min}}$ or greater** across the entire wall height and faces.
 """)
+
+st.markdown("---")
+st.subheader("6.3 Summary of Key Design Values")
+data = {
+    "Parameter": ["Wall Thickness", "Effective Depth", "L/H Ratio", "Max Design Moment ($M_u$)", "Required $A_{st}$ (Vert.)", "Provided $\\sigma_{s, actual}$", "Allowable $\\sigma_{s, allow}$"],
+    "Value": [
+        f"{geom.t_wall * 1000:.0f} mm",
+        f"{d_eff:.0f} mm",
+        f"{L_over_H:.2f}",
+        f"{Mu_max_design:.2f} kNm/m",
+        f"{Ast_req_final:.0f} mm²/m",
+        f"{sigma_s_actual:.0f} MPa",
+        f"{sigma_allow:.0f} MPa"
+    ],
+    "Result": ["-", "-", "-", "-", "-", "-", "SLS " + ('PASS' if sigma_s_actual <= sigma_allow else 'FAIL')]
+}
+st.table(pd.DataFrame(data))
+
+# End of code
