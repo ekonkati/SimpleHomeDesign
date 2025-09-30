@@ -178,7 +178,6 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
     # Format numbers outside of the Mathtext string
     P_max_w_str = f'{P_max_w:.1f}'
     R_liq_str = f'{R_liq:.1f}'
-    P_max_s_str = f'{0:.1f}' # Default for soil
     R_soil_str = f'{R_soil:.1f}'
 
 
@@ -209,12 +208,12 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
     ax.fill_betweenx([t_base, H_total], [0, P_max_w], 0, color='b', alpha=0.3, label='Water Pressure')
     ax.plot(x_w, y_w, color='b', linestyle='--') 
     
-    # Pressure magnitude label (Pmax) - FIXED: Separated string concatenation
+    # Pressure magnitude label (Pmax) - FIXED: Simplified Mathtext syntax
     ax.text(P_max_w * 1.05, t_base + 0.1, 
             r'$P_{\mathrm{w, max}} = ' + P_max_w_str + r'\ \mathrm{kN/m^2}$', 
             color='b', fontsize=10)
     
-    # Resultant force label (R_w) - FIXED: Separated string concatenation
+    # Resultant force label (R_w) - FIXED: Simplified Mathtext syntax
     ax.arrow(P_max_w * 0.5, t_base + H_wall/3, -0.05, 0, head_width=0.1, head_length=0.1, fc='b', ec='b')
     ax.text(P_max_w * 0.5, t_base + H_wall/3 + 0.2, 
             r'$R_w = ' + R_liq_str + r'\ \mathrm{kN/m}$', 
@@ -233,12 +232,12 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
         ax.fill_betweenx([0, H_total], [-P_max_s, 0], 0, color='brown', alpha=0.3, label='Earth Pressure')
         ax.plot(x_s, y_s, color='brown', linestyle='--')
         
-        # Pressure magnitude label (Pmax) - FIXED: Separated string concatenation
+        # Pressure magnitude label (Pmax) - FIXED: Simplified Mathtext syntax
         ax.text(-P_max_s * 1.05, 0.1, 
                 r'$P_{\mathrm{s, max}} = ' + P_max_s_str + r'\ \mathrm{kN/m^2}$', 
                 color='brown', ha='right', fontsize=10)
         
-        # Resultant force label (R_s) - FIXED: Separated string concatenation
+        # Resultant force label (R_s) - FIXED: Simplified Mathtext syntax
         ax.arrow(-P_max_s * 0.5, H_total/3, 0.05, 0, head_width=0.1, head_length=0.1, fc='brown', ec='brown')
         ax.text(-P_max_s * 0.5, H_total/3 + 0.2, 
                 r'$R_s = ' + R_soil_str + r'\ \mathrm{kN/m}$', 
@@ -288,7 +287,7 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     ax_v.plot([0, V_base_max, 0], [0, 0, H], 'r-', linewidth=2)
     ax_v.fill([0, V_base_max, 0], [0, 0, H], 'r', alpha=0.2)
     ax_v.plot([0, 0], [0, H], 'k--')
-    # FIXED: Separated string concatenation
+    # FIXED: Simplified Mathtext syntax
     ax_v.text(V_base_max * 1.1, 0.05, 
               r'$V_{\max} = ' + V_max_str + r'\ \mathrm{kN/m}$', 
               color='r', fontsize=10)
@@ -305,7 +304,7 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     ax_m_L.plot(x_m_L, y_m_L, 'b-', linewidth=2)
     ax_m_L.fill(x_m_L, y_m_L, 'b', alpha=0.2)
     ax_m_L.plot([0, 0], [0, H], 'k--')
-    # FIXED: Separated string concatenation
+    # FIXED: Simplified Mathtext syntax
     ax_m_L.text(M_base_L * 1.1, 0.05, 
                 r'$M_{L} = ' + M_L_str + r'\ \mathrm{kNm/m}$', 
                 color='b', fontsize=10)
@@ -322,7 +321,7 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     ax_m_B.plot(x_m_B, y_m_B, 'g-', linewidth=2)
     ax_m_B.fill(x_m_B, y_m_B, 'g', alpha=0.2)
     ax_m_B.plot([0, 0], [0, H], 'k--')
-    # FIXED: Separated string concatenation
+    # FIXED: Simplified Mathtext syntax
     ax_m_B.text(M_base_B * 1.1, 0.05, 
                 r'$M_{B} = ' + M_B_str + r'\ \mathrm{kNm/m}$', 
                 color='g', fontsize=10)
