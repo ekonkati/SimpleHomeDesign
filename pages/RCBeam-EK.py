@@ -328,8 +328,8 @@ if ductile:
     max_hoop = min(0.25*d, 8*phi_main, 100)
 
     st.warning("⚠️ **IS 13920 Advisory Checks**")
-    # Corrected line 334: removed spurious character
-    st.write(f"**Confinement Length** at each end $\\geq 2d$ or $600\\text{ mm} = **{hinge_len_mm:.0f}**$ mm.") 
+    # Verified and corrected line
+    st.write(f"**Confinement Length** at each end $\\geq 2d$ or $600\\text{{ mm}} = **{hinge_len_mm:.0f}**$ mm.")
     st.write(f"**Hoop Spacing in Hinge Zone** $\\leq \min(0.25d, 8\\phi_{{main}}, 100) = **{max_hoop:.0f}**$ mm.")
     st.caption("Detailed design shear based on probable moments and joint checks must be verified separately.")
 
@@ -343,14 +343,12 @@ st.subheader("3.1 Factored Bending Moment and Shear Force Diagrams")
 xs = np.linspace(0, L, 50)
 if action_mode == "Derive from loads":
     if support != "Cantilever":
-        # Simplified parabolic M for UDL
         M = [w_ULS_15 * x * (L - x) / 2 for x in xs] if support == "Simply Supported" else [w_ULS_15 * x * (L - x) / 8 for x in xs] 
         V = [w_ULS_15 * (L / 2 - x) for x in xs]
     else:
         M = [-0.5 * w_ULS_15 * (x ** 2) for x in xs]
         V = [-w_ULS_15 * x for x in xs]
 else:
-    # Use approximate shapes for visualization if direct input is used
     M = [Mu_kNm * np.sin(np.pi * x / L) / np.sin(np.pi / 2) for x in xs] if support == "Simply Supported" else [Mu_kNm * (x / L) for x in xs] 
     V = [Vu_kN * np.cos(np.pi * x / L) for x in xs] if support == "Simply Supported" else [Vu_kN * (1 - 2*x/L) for x in xs]
 
