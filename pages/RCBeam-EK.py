@@ -79,6 +79,31 @@ def ld_required(fck, fy, bar_dia_mm, deformed=True, tension=True):
     Ld = (bar_dia_mm * fy) / (4.0 * tau_bd)
     return Ld
 
+# ------------------------------------------------------------------
+# RE-INSERTED SHEAR DESIGN FUNCTION (FIXES NAMEERROR)
+# ------------------------------------------------------------------
+def shear_design(Vu_kN_eff, b_mm, d_mm, fck, fy, Ast_mm2):
+    tau_v = (Vu_kN_eff * 1e3) / (b_mm * d_mm)
+    p_t = 100.0 * Ast_mm2 / (b_mm * d_mm)
+    tc = tau_c(fck, p_t)
+    tc_max = TAU_C_MAX[min(TAU_C_MAX.keys(), key=lambda k: abs(k - fck))]
+    
+    # Required Vus (kN)
+    Vus_kN = Vu_kN_eff - tc * b_mm * d_mm / 1e3
+    
+    # For initial calculation of min spacing
+    phi, legs = 8.0, 2
+    Asv_default = legs * math.pi * (phi**2) / 4.0
+    s_v_min = (0.87 * fy * Asv_default) / (0.4 * b_mm) 
+    s_v_max_limit = min(0.75 * d_mm, 300.0)
+    
+    return {"tau_v": tau_v, "p_t": p_t, "tau_c": tc, "tau_c_max": tc_max,
+            "Vus_kN": Vus_kN, 
+            "s_v_min_control": min(s_v_min, s_v_max_limit),
+            "min_shear_needed": Vus_kN <= 0,
+            "d_eff": d_mm}
+# ------------------------------------------------------------------
+
 # ---------- UI INPUTS (GENERAL) ----------
 
 with st.sidebar:
@@ -105,7 +130,6 @@ with colB:
     st.subheader("Materials")
     fck = st.selectbox("Concrete $f_{ck}$ (N/mm²)", [20,25,30,35,40], index=2)
     fy = st.selectbox("Steel $f_y$ (N/mm²)", [415,500], index=1)
-    # Default bar size for Ld check
     t_bar_d_default = st.selectbox("Tension Bar $\phi$ for $L_d$ (mm)", [12,16,20,25,28,32], index=1)
     c_bar_d_default = st.selectbox("Compression Bar $\phi$ for $L_d$ (mm)", [12,16,20,25], index=0)
 
@@ -154,7 +178,6 @@ else:
     w_ULS_15 = 1.5 * (w_DL + w_LL) 
     w_service = w_DL + w_LL
     
-    # Coefficients (IS 456: Table 12 & 13)
     if support=="Simply Supported": kM, kV = 1/8, 0.5
     elif support=="Cantilever": kM, kV = 1/2, 1.0
     else: kM, kV = 1/12, 0.6 
@@ -200,7 +223,7 @@ col_t1, col_t2 = st.columns(2)
 with col_t1:
     t_bar_d = st.selectbox("Bottom Bar $\phi$ (mm)", [12, 16, 20, 25, 28, 32], index=2 if Ast_req > 1000 else 1)
 with col_t2:
-    t_bar_count = st.number_input("Bottom Bar Count (Total)", value=math.ceil(Ast_req / (math.pi*t_bar_d**2/4.0)), min_value=2, step=1)
+    t_bar_count = st.number_input("Bottom Bar Count (Total)", value=max(2, math.ceil(Ast_req / (math.pi*t_bar_d**2/4.0))), min_value=2, step=1)
 
 Ast_prov = (math.pi*(t_bar_d**2)/4.0) * t_bar_count 
 
@@ -218,6 +241,7 @@ else:
 
 st.subheader("2.3 Shear Design (IS 456: Cl. 40 & 41)")
 
+# Call shear_design after Ast_prov is available
 shear_res = shear_design(Vu_eff_kN, sec.b, d, mat.fck, mat.fy, Ast_prov)
 
 st.write(f"**Equivalent Shear ($V_{{e}}$)**: $V_u + 1.6 T_u/b = **{Vu_eff_kN:.1f}**$ kN.")
@@ -227,11 +251,10 @@ st.write(f"**Concrete Shear Strength ($\tau_c$)**: **{shear_res['tau_c']:.3f}** 
 if shear_res["tau_v"] > shear_res["tau_c_max"]:
     st.error("❌ **SECTION FAILURE**: $\\tau_v > \\tau_{{c,max}}$. Increase section size or $f_{{ck}}$.")
 else:
-    if shear_res["min_shear_needed"]:
-        Vus_req_kN = 0.0
+    Vus_req_kN = max(0.0, shear_res['Vus_kN'])
+    if Vus_req_kN == 0.0:
         st.success("✅ Concrete carries all shear. Provide minimum shear reinforcement.")
     else:
-        Vus_req_kN = shear_res['Vus_kN']
         st.warning(f"⚠️ Shear links required. $V_{{us,req}} = {Vus_req_kN:.1f}$ kN.")
 
 
@@ -244,22 +267,31 @@ with col_s2:
     stirrup_legs = st.number_input("Stirrup Legs (n)", value=2, min_value=2, max_value=4, step=2)
 with col_s3:
     Asv_prov = stirrup_legs * math.pi * (stirrup_d**2) / 4.0
+    
+    # Required spacing
     s_v_req_calc = (0.87 * fy * Asv_prov * d) / (Vus_req_kN * 1e3) if Vus_req_kN > 0 else float('inf')
+    # Max spacing for minimum shear steel
     s_v_min_calc = (0.87 * fy * Asv_prov) / (0.4 * b)
-    s_v_min_control = min(shear_res['s_v_max_limit'], s_v_min_calc)
+    # Absolute max spacing (300mm or 0.75d)
+    s_v_max_abs = min(0.75 * d, 300.0)
 
-    default_spacing = int(min(s_v_req_calc, s_v_min_control))
-    s_v_prov = st.number_input("Provided Spacing $s_v$ (mm)", value=clamp(default_spacing, 50, 300), min_value=50, step=10)
+    # Controlling spacing is the minimum of required, min steel, and absolute max.
+    control_spacing = min(s_v_req_calc, s_v_min_calc, s_v_max_abs)
+    
+    default_spacing = int(clamp(control_spacing, 50, s_v_max_abs))
+    s_v_prov = st.number_input("Provided Spacing $s_v$ (mm)", value=default_spacing, min_value=50, step=10)
 
 Vus_prov_kN = (0.87 * fy * Asv_prov * d) / (s_v_prov * 1e3) 
 
-if Vus_prov_kN >= Vus_req_kN and s_v_prov <= shear_res['s_v_max_limit'] and s_v_prov <= s_v_min_calc:
+if Vus_prov_kN >= Vus_req_kN and s_v_prov <= s_v_max_abs:
     st.success(f"✅ Shear Reinforcement passed: $\\phi{stirrup_d}$ mm {stirrup_legs}-leg @ **{s_v_prov} mm** c/c.")
     st.write(f"Capacity $V_{{us,prov}}$ = **{Vus_prov_kN:.1f} kN** (Required {Vus_req_kN:.1f} kN).")
+    st.write(f"Maximum Allowed Spacing (Cl 26.5.1.5): **{s_v_max_abs:.0f} mm**.")
 else:
     st.error("❌ Shear Reinforcement failed: Spacing is too large or stirrup capacity is insufficient.")
-    st.write(f"Max Allowed Spacing: **{min(s_v_req_calc, shear_res['s_v_max_limit']):.0f} mm** (Controls).")
-    st.write(f"Max Spacing (Min Steel): **{s_v_min_calc:.0f} mm**.")
+    st.write(f"Max Allowed Spacing for design: **{control_spacing:.0f} mm** (Controls).")
+    st.write(f"Absolute Max Spacing: **{s_v_max_abs:.0f} mm**.")
+
 
 # Serviceability (L/d) and Development Length
 base_Ld = LD_LIMITS[support]
@@ -280,7 +312,19 @@ else:
     st.error("❌ **L/d Check Failed**. Increase depth $D$ or provide compression steel.")
 
 st.subheader("2.6 Development Length ($L_d$) and Ductile Detailing (IS 13920)")
-st.write(f"**Required Development Length $L_d$ (Tension)**: **{Ld_tension:.0f}** mm.")
+st.write(f"**Required Development Length $L_d$ (Tension)**: **{Ld_tension:.0f}** mm (for $\\phi={t_bar_d_default}$ mm).")
+st.write(f"**Required Development Length $L_d$ (Compression)**: **{Ld_comp:.0f}** mm (for $\\phi={c_bar_d_default}$ mm).")
+
+if ductile:
+    hinge_len_mm = max(2*d, 600)
+    # Using the bar size provided for design (t_bar_d) for the hinge check
+    phi_main = max(12, t_bar_d) 
+    max_hoop = min(0.25*d, 8*phi_main, 100)
+
+    st.warning("⚠️ **IS 13920 Advisory Checks**")
+    st.write(f"**Confinement Length** at each end $\\geq 2d$ or $600\\text{{ mm}} = **{hinge_len_mm:.0f}**$ mm.")
+    st.write(f"**Hoop Spacing in Hinge Zone** $\\leq \min(0.25d, 8\\phi_{{main}}, 100) = **{max_hoop:.0f}**$ mm.")
+    st.caption("Detailed design shear based on probable moments and joint checks must be verified separately.")
 
 
 # ---------- VISUALIZATIONS AND EXPORT ----------
@@ -288,16 +332,18 @@ st.write(f"**Required Development Length $L_d$ (Tension)**: **{Ld_tension:.0f}**
 st.header("3. Beam Diagrams and Drawings")
 st.markdown("---")
 
-st.subheader("3.1 Factored Bending Moment and Shear Force Diagrams")
+st.subheader("3.1 Factored Bending Moment, Shear Force, and Deflection Diagrams")
 
 # M and V calculations for plotting
 xs = np.linspace(0, L, 50)
 if action_mode == "Derive from loads":
     if support=="Simply Supported": 
-        M = [-1 * w_ULS_15 * x * (L - x) / 2 for x in xs] # Negative for plotting downwards (sagging)
+        # Negative for plotting downwards (sagging is positive for beam sign convention)
+        M = [-1 * w_ULS_15 * x * (L - x) / 2 for x in xs] 
         V = [w_ULS_15 * (L / 2 - x) for x in xs]
     elif support=="Cantilever":
-        M = [0.5 * w_ULS_15 * (L - x)**2 for x in xs] # Positive for plotting upwards (hogging)
+        # Positive for plotting upwards (hogging is negative for beam sign convention)
+        M = [0.5 * w_ULS_15 * (L - x)**2 for x in xs] 
         V = [w_ULS_15 * (L - x) for x in xs]
     else: # Continuous: assume hogging at supports and sagging at midspan
         M = [-1 * w_ULS_15 * x * (L - x) / 8 for x in xs] # Simplified parabolic 
@@ -314,7 +360,7 @@ dfV = pd.DataFrame({"x": xs, "V (kN)": V}).set_index("x")
 # Bending Moment Diagram (Inverted)
 fig_M = px.line(dfM, y="M (kN·m)", title="Factored Bending Moment Diagram (Sagging Downward)")
 fig_M.update_traces(fill='tozeroy', line_color='rgb(30, 144, 255)')
-fig_M.update_yaxes(autorange='reversed') # Ensures sagging (negative y-value) is plotted downward
+fig_M.update_yaxes(autorange='reversed') 
 st.plotly_chart(fig_M, use_container_width=True)
 
 # Shear Force Diagram
@@ -327,34 +373,41 @@ Ec = 5000 * math.sqrt(fck) # N/mm2
 Igross = (b * D**3) / 12 # mm4
 EIkNmm2 = (Ec * 1e-3) * (Igross * 1e-6) # kN.m2 (Placeholder for approximate I)
 
+deflection = [0] * len(xs)
 if support=="Simply Supported":
-    k_def = 5.0 / 384.0
-    # Deflection equation for simply supported beam under UDL (sign convention for plotting downwards)
-    deflection = [k_def * w_service * L**4 * (24*(x/L)**4 - 40*(x/L)**3 + 16*(x/L)) * 10**6 / (Ec * Igross) for x in xs] # in mm
+    w_service_Nmm = w_service * 1000.0 / 1000.0 # kN/m to N/mm
+    L_mm = L * 1000.0
+    for i, x in enumerate(xs):
+        x_mm = x * 1000.0
+        # Deflection equation for simply supported beam under UDL (in mm)
+        # Note: Sign is inverted so positive is downward, matching the sag
+        deflection[i] = -(w_service_Nmm * x_mm * (L_mm**3 - 2*L_mm*x_mm**2 + x_mm**3)) / (24 * Ec * Igross)
 elif support=="Cantilever":
-    k_def = 1.0 / 8.0
-    deflection = [-k_def * w_service * L**4 * (x/L)**2 * 10**6 / (Ec * Igross) for x in xs] # in mm (negative sign for downward)
-else: # Continuous - use SS for simple approximation
-    k_def = 1.0 / 384.0
-    deflection = [k_def * w_service * L**4 * (24*(x/L)**4 - 40*(x/L)**3 + 16*(x/L)) * 10**6 / (Ec * Igross) for x in xs]
+    w_service_Nmm = w_service * 1000.0 / 1000.0 # kN/m to N/mm
+    L_mm = L * 1000.0
+    for i, x in enumerate(xs):
+        x_mm = x * 1000.0
+        # Deflection equation for cantilever beam under UDL (in mm)
+        # Note: Sign is inverted so positive is downward, matching the sag
+        deflection[i] = (w_service_Nmm * x_mm**2 * (6*L_mm**2 - 4*L_mm*x_mm + x_mm**2)) / (24 * Ec * Igross)
 
 dfD = pd.DataFrame({"x": xs, "Deflection (mm)": deflection}).set_index("x")
 
 fig_D = px.line(dfD, y="Deflection (mm)", title="Approximate Deflection Profile (mm)")
 fig_D.update_traces(line_color='rgb(0, 180, 0)')
-fig_D.update_yaxes(title_text="Deflection (mm) [Negative is Down]")
+fig_D.update_yaxes(title_text="Deflection (mm) [Negative is Up, Positive is Down]")
 st.plotly_chart(fig_D, use_container_width=True)
 
 st.subheader("3.2 Rebar Layout and Curtailment for Drawing $\leftarrow$ Customize Here")
-st.caption("Use this table **only** to define the visual layout and curtailment. $A_{st, prov}$ for design is from Section 2.2.")
+st.caption("Use this table **only** to define the visual layout and curtailment. $A_{st, prov}$ for design is from Section 2.2. Lengths are in **meters**.")
 
 # Simplified Rebar Table for Drawing (Initialised based on Section 2.2 input)
 if "rebar_df_draw" not in st.session_state:
     st.session_state.rebar_df_draw = pd.DataFrame([
         # Main Bottom Steel (Continuous)
-        {"position":"bottom","dia_mm":int(t_bar_d_default),"count":2,"start_m":0.0,"end_m":span},
+        {"position":"bottom","dia_mm":int(t_bar_d),"count":2,"start_m":0.0,"end_m":span},
         # Additional Bottom Steel (Curtailed)
-        {"position":"bottom","dia_mm":int(t_bar_d_default),"count":t_bar_count-2,"start_m":L/8,"end_m":span-L/8},
+        {"position":"bottom","dia_mm":int(t_bar_d),"count":max(0, t_bar_count-2),"start_m":L/8,"end_m":span-L/8},
         # Top Steel (Continuous)
         {"position":"top","dia_mm":int(c_bar_d_default),"count":2,"start_m":0.0,"end_m":span},
     ])
@@ -364,7 +417,6 @@ st.session_state.rebar_df_draw = rebar_df_edited
 st.subheader("3.3 Cross and Longitudinal Drawings")
 
 def draw_cross_section_plotly(b_mm, D_mm, cover_mm, df_rebar):
-    # This function uses the current state of the drawing table to place circles
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, y0=0, x1=b_mm, y1=D_mm, line=dict(color="black", width=2), fillcolor="rgba(192, 192, 192, 0.5)")
     cc = float(cover_mm)
@@ -403,13 +455,12 @@ def draw_cross_section_plotly(b_mm, D_mm, cover_mm, df_rebar):
     st.plotly_chart(fig, use_container_width=True)
 
 def draw_longitudinal_section_plotly(L_m, D_mm, cover_mm, df_rebar):
-    # This function respects the start_m and end_m for curtailment
     fig = go.Figure()
     L_mm = L_m * 1000
     
     fig.add_shape(type="rect", x0=0, y0=0, x1=L_mm, y1=D_mm, line=dict(color="black", width=2), fillcolor="rgba(192, 192, 192, 0.5)")
     
-    for i, row in df_rebar.iterrows():
+    for _, row in df_rebar.iterrows():
         start_x = row['start_m'] * 1000
         end_x = row['end_m'] * 1000
         dia = row['dia_mm']
