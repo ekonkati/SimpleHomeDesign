@@ -108,7 +108,7 @@ class Loads:
     phi: float = 30.0   
     mu_base: float = 0.5 
     z_g_zone: int = 3   
-    Hwt: float = 4.3    # m (Water table height)
+    Hwt: float = 0.0    # Changed default to a safe 0.0
 
 # ===============================
 # Engineering Helper Functions
@@ -231,7 +231,9 @@ if 'mat' not in st.session_state:
     st.session_state.mat = Materials()
     st.session_state.geom = Geometry()
     st.session_state.loads = Loads()
-
+    # Set conservative initial Hwt after geom is initialized
+    st.session_state.loads.Hwt = st.session_state.geom.H + st.session_state.geom.t_base
+    
 mat, geom, loads = st.session_state.mat, st.session_state.geom, st.session_state.loads
 
 
@@ -261,7 +263,15 @@ with col3:
     if geom.tank_type == "Ground":
         loads.gamma_s = st.number_input("Soil Density $\gamma_{s}$ (kN/m³)", 15.0, 25.0, loads.gamma_s, 0.5, key="load_gs")
         loads.K0 = st.number_input("Earth Pressure Coeff. $K_{0}$", 0.3, 1.0, loads.K0, 0.05, key="load_k0")
-        loads.Hwt = st.number_input("Water Table Height $H_{wt}$ (m) (for Buoyancy)", 0.0, geom.H + geom.t_base + 1.0, loads.Hwt, 0.1, key="load_hwt")
+        
+        # FIX: The max value is dynamic, so the default value must be safe.
+        max_hwt = geom.H + geom.t_base + 1.0
+        # Ensure the current Hwt is not greater than the new max_hwt
+        if loads.Hwt > max_hwt:
+            loads.Hwt = max_hwt
+            
+        loads.Hwt = st.number_input("Water Table Height $H_{wt}$ (m) (for Buoyancy)", 0.0, max_hwt, loads.Hwt, 0.1, key="load_hwt")
+        
     else:
         loads.Hwt = 0.0 # No buoyancy concern for elevated tank
     loads.z_g_zone = st.selectbox("Seismic Zone (IS 1893-2)", [2, 3, 4, 5], index=loads.z_g_zone-2 if loads.z_g_zone in [2,3,4,5] else 1, key="load_zone")
