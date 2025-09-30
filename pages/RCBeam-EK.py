@@ -6,6 +6,7 @@ import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+import json
 
 st.set_page_config(page_title="Printable RCC Beam Designer (IS Codes)", layout="wide")
 st.title("RCC Beam Designer – Printable Narrative Report")
@@ -99,7 +100,6 @@ def shear_design(Vu_kN_eff, b_mm, d_mm, fck, fy, Ast_mm2):
             "d_eff": d_mm}
 
 def get_fsc(fy, d_prime_over_d):
-    # Stress in compression steel (fsc) from IS 456, Table G (simplified interpolation)
     fsc_vals = {
         415: [(0.05, 355), (0.10, 353), (0.15, 342), (0.20, 329)],
         500: [(0.05, 412), (0.10, 395), (0.15, 379), (0.20, 368)]
@@ -113,49 +113,112 @@ def get_fsc(fy, d_prime_over_d):
         d1, f1 = fsc_vals[fy][i+1]
         if d0 < d_prime_over_d <= d1:
             return f0 + (f1 - f0) * (d_prime_over_d - d0) / (d1 - d0)
-    return 300 # Failsafe
+    return 300 
 
-def ast_asc_doubly(Mu_kNm, Mu_lim_kNm, fck, fy, d_mm, d_prime_mm):
+def ast_asc_doubly(Mu_kNm, Mu_lim_kNm, fck, fy, d_mm, d_prime_mm, b_mm):
     
     Mu_Nmm = Mu_kNm * 1e6
     Mu_lim_Nmm = Mu_lim_kNm * 1e6
     
-    # 1. Moment carried by concrete and Ast_lim
-    Ast_lim = 0.414 * fck * mu_lim_rect(fck, 1000, d_mm, fy) / (fy * 1000) # This is not Ast_lim, but a ratio.
-    # Recalculate Ast_lim accurately
     k_mulim = 0.138 if fy <= 415 else 0.133
-    Ast_lim = (0.36 * fck * k_mulim * d_mm * sec.b) / (0.87 * fy)
+    Ast_lim = (0.36 * fck * 0.48 * d_mm * b_mm) / (0.87 * fy) # 0.48*d_mm is xu,max for Fe500
     
-    # 2. Excess moment carried by Ast2 and Asc
     delta_Mu_Nmm = Mu_Nmm - Mu_lim_Nmm
     
     d_prime_over_d = d_prime_mm / d_mm
     fsc = get_fsc(fy, d_prime_over_d)
     
-    # 3. Required Compression Steel (Asc)
-    # Assume reduction in concrete stress (0.446 fck) is ignored for simplicity, 
-    # as is common in practice and conservative for steel.
-    # Asc_req = Delta_Mu / (fsc * (d - d'))
     Asc_req = delta_Mu_Nmm / (fsc * (d_mm - d_prime_mm))
-
-    # 4. Required Additional Tension Steel (Ast2)
-    # Ast2 = Delta_Mu / (0.87 * fy * (d - d'))
     Ast2 = delta_Mu_Nmm / (0.87 * fy * (d_mm - d_prime_mm))
 
-    # Total tension steel
     Ast_total_req = Ast_lim + Ast2
 
     return Ast_total_req, Asc_req, Ast_lim
 
+
+# ---------- JSON IMPORT/EXPORT FUNCTIONS ----------
+
+# Initialize session state for all inputs if they don't exist
+# This allows the app to maintain state during JSON load
+DEFAULT_STATE = {
+    "span": 6.0, "support": "Simply Supported", "b": 300, "D": 500, "cover": 25,
+    "fck": 30, "fy": 500, "t_bar_d_default": 16, "c_bar_d_default": 12,
+    "finishes": 2.0, "ll": 5.0, "use_wall": False, "wall_thk": 115, "wall_h": 3.0, "wall_density": 19.0,
+    "include_eq": False, "eq_coeff": 0.0, "ductile": True, 
+    "action_mode": 0, "Mu_in": 120.0, "Vu_in": 180.0, "Tu_in": 0.0, "Nu_in": 0.0,
+    # Provided Reinforcement (design checks)
+    "t_bar_d": 20, "t_bar_count": 3,
+    "c_bar_d": 12, "c_bar_count": 2, # Note: c_bar_d_default used here for initial sync
+    "stirrup_d": 8, "stirrup_legs": 2, "s_v_prov": 150,
+    # Drawing table (must be synced after flexure inputs)
+    "rebar_df_draw": None 
+}
+
+for key, default_val in DEFAULT_STATE.items():
+    if key not in st.session_state:
+        st.session_state[key] = default_val
+
+def export_design_to_json():
+    # Collect all input values from session state
+    export_data = {key: st.session_state[key] for key in DEFAULT_STATE.keys()}
+    
+    # Handle the DataFrame specifically
+    if st.session_state.rebar_df_draw is not None:
+        export_data["rebar_df_draw"] = st.session_state.rebar_df_draw.to_dict('records')
+    
+    json_string = json.dumps(export_data, indent=4)
+    return json_string
+
+def import_design_from_json(json_file):
+    try:
+        data = json.load(json_file)
+        # Update session state with imported values
+        for key, val in data.items():
+            if key in DEFAULT_STATE:
+                if key == "rebar_df_draw" and isinstance(val, list):
+                    st.session_state[key] = pd.DataFrame(val)
+                else:
+                    st.session_state[key] = val
+        st.toast("✅ Design successfully loaded! Re-run the app to see all changes.", icon='💾')
+        st.experimental_rerun() # Rerun to update all widgets
+    except Exception as e:
+        st.error(f"❌ Error loading file: {e}")
+
+
 # ---------- UI INPUTS (GENERAL) ----------
 
 with st.sidebar:
+    st.header("Save/Load Design")
+    
+    # Export button
+    json_export = export_design_to_json()
+    st.download_button(
+        "⬇️ Export Design State (JSON)",
+        data=json_export,
+        file_name="beam_design_state.json",
+        mime="application/json",
+        help="Download the current design inputs as a JSON file."
+    )
+    
+    # Import uploader
+    uploaded_file = st.file_uploader(
+        "⬆️ Import Design State (JSON)",
+        type="json",
+        help="Upload a previously saved design state JSON file.",
+        accept_multiple_files=False
+    )
+    if uploaded_file is not None:
+        import_design_from_json(uploaded_file)
+    
+    st.markdown("---")
     st.header("Quick Toggles")
-    use_wall = st.checkbox("Add wall load", value=False)
-    include_eq = st.checkbox("Include E/W coeff", value=False)
-    eq_coeff = st.number_input("Eq. coeff (×wL²)", value=0.0, step=0.05, disabled=not include_eq)
-    ductile = st.checkbox("Apply IS 13920 checks", value=True)
+    st.session_state.use_wall = st.checkbox("Add wall load", value=st.session_state.use_wall)
+    st.session_state.include_eq = st.checkbox("Include E/W coeff", value=st.session_state.include_eq)
+    st.session_state.eq_coeff = st.number_input("Eq. coeff (×wL²)", value=st.session_state.eq_coeff, step=0.05, disabled=not st.session_state.include_eq)
+    st.session_state.ductile = st.checkbox("Apply IS 13920 checks", value=st.session_state.ductile)
     st.caption("⚠️ Use the 'Print' function of your browser (Ctrl+P / Cmd+P) for the final report.")
+    st.markdown("---")
+
 
 st.header("1. Project Inputs")
 st.markdown("---")
@@ -163,91 +226,89 @@ colA, colB, colC = st.columns(3)
 
 with colA:
     st.subheader("Geometry")
-    span = st.number_input("Clear span $L$ (m)", value=6.0, min_value=0.5, step=0.1)
-    support = st.selectbox("End condition", ["Simply Supported","Continuous","Cantilever"], index=0)
-    b = st.number_input("Beam width $b$ (mm)", value=300, step=10, min_value=150)
-    D = st.number_input("Overall depth $D$ (mm)", value=500, step=10, min_value=200)
-    cover = st.number_input("Clear cover (mm)", value=25, step=5, min_value=20)
+    st.session_state.span = st.number_input("Clear span $L$ (m)", value=st.session_state.span, min_value=0.5, step=0.1)
+    st.session_state.support = st.selectbox("End condition", ["Simply Supported","Continuous","Cantilever"], index=["Simply Supported","Continuous","Cantilever"].index(st.session_state.support))
+    st.session_state.b = st.number_input("Beam width $b$ (mm)", value=st.session_state.b, step=10, min_value=150)
+    st.session_state.D = st.number_input("Overall depth $D$ (mm)", value=st.session_state.D, step=10, min_value=200)
+    st.session_state.cover = st.number_input("Clear cover (mm)", value=st.session_state.cover, step=5, min_value=20)
 
 with colB:
     st.subheader("Materials")
-    fck = st.selectbox("Concrete $f_{ck}$ (N/mm²)", [20,25,30,35,40], index=2)
-    fy = st.selectbox("Steel $f_y$ (N/mm²)", [415,500], index=1)
-    # Default bar size for Ld check
-    t_bar_d_default = st.selectbox("Tension Bar $\phi$ for $L_d$ (mm)", [12,16,20,25,28,32], index=1)
-    c_bar_d_default = st.selectbox("Compression Bar $\phi$ for $L_d$ (mm)", [12,16,20,25], index=0)
+    st.session_state.fck = st.selectbox("Concrete $f_{ck}$ (N/mm²)", [20,25,30,35,40], index=[20,25,30,35,40].index(st.session_state.fck))
+    st.session_state.fy = st.selectbox("Steel $f_y$ (N/mm²)", [415,500], index=[415,500].index(st.session_state.fy))
+    st.session_state.t_bar_d_default = st.selectbox("Tension Bar $\phi$ for $L_d$ (mm)", [12,16,20,25,28,32], index=[12,16,20,25,28,32].index(st.session_state.t_bar_d_default))
+    st.session_state.c_bar_d_default = st.selectbox("Compression Bar $\phi$ for $L_d$ (mm)", [12,16,20,25], index=[12,16,20,25].index(st.session_state.c_bar_d_default))
 
 with colC:
     st.subheader("Loads")
-    finishes = st.number_input("Finishes (kN/m)", value=2.0, step=0.1, min_value=0.0)
-    ll = st.number_input("Live load (kN/m)", value=5.0, step=0.5, min_value=0.0)
-    wall_thk = st.number_input("Wall thk (mm)", value=115, step=115, min_value=0, disabled=not use_wall)
-    wall_h = st.number_input("Wall height (m)", value=3.0, step=0.1, min_value=0.0, disabled=not use_wall)
-    wall_density = st.number_input("Masonry density (kN/m³)", value=19.0, step=0.5, disabled=not use_wall)
+    st.session_state.finishes = st.number_input("Finishes (kN/m)", value=st.session_state.finishes, step=0.1, min_value=0.0)
+    st.session_state.ll = st.number_input("Live load (kN/m)", value=st.session_state.ll, step=0.5, min_value=0.0)
+    st.session_state.wall_thk = st.number_input("Wall thk (mm)", value=st.session_state.wall_thk, step=115, min_value=0, disabled=not st.session_state.use_wall)
+    st.session_state.wall_h = st.number_input("Wall height (m)", value=st.session_state.wall_h, step=0.1, min_value=0.0, disabled=not st.session_state.use_wall)
+    st.session_state.wall_density = st.number_input("Masonry density (kN/m³)", value=st.session_state.wall_density, step=0.5, disabled=not st.session_state.use_wall)
 
 st.subheader("Design Action Source")
-action_mode = st.radio("Use:", ["Derive from loads", "Direct design actions"], index=0, horizontal=True)
+action_options = ["Derive from loads", "Direct design actions"]
+st.session_state.action_mode = st.radio("Use:", action_options, index=st.session_state.action_mode if isinstance(st.session_state.action_mode, int) else action_options.index(st.session_state.action_mode), horizontal=True)
 
 Mu_in, Vu_in, Tu_in, Nu_in = 0.0, 0.0, 0.0, 0.0
-if action_mode == "Direct design actions":
+if st.session_state.action_mode == "Direct design actions":
     st.info("Enter factored design actions (ULS) at the critical section.")
     colX,colY = st.columns(2)
     with colX:
-        Mu_in = st.number_input("Design bending moment $M_u$ (kN·m)", value=120.0, step=5.0, min_value=0.0)
-        Vu_in = st.number_input("Design shear $V_u$ (kN)", value=180.0, step=5.0, min_value=0.0)
+        st.session_state.Mu_in = st.number_input("Design bending moment $M_u$ (kN·m)", value=st.session_state.Mu_in, step=5.0, min_value=0.0)
+        st.session_state.Vu_in = st.number_input("Design shear $V_u$ (kN)", value=st.session_state.Vu_in, step=5.0, min_value=0.0)
     with colY:
-        Tu_in = st.number_input("Design torsion $T_u$ (kN·m)", value=0.0, step=1.0, min_value=0.0)
-        Nu_in = st.number_input("Design axial $N_u$ (kN) (+compression)", value=0.0, step=5.0)
+        st.session_state.Tu_in = st.number_input("Design torsion $T_u$ (kN·m)", value=st.session_state.Tu_in, step=1.0, min_value=0.0)
+        st.session_state.Nu_in = st.number_input("Design axial $N_u$ (kN) (+compression)", value=st.session_state.Nu_in, step=5.0)
 
 
 # ---------- CORE DESIGN CALCULATIONS (Before Results) ----------
 
-mat, sec = Materials(fck,fy), Section(b,D,cover)
+mat, sec = Materials(st.session_state.fck, st.session_state.fy), Section(st.session_state.b, st.session_state.D, st.session_state.cover)
 d = sec.d_eff
-L = span
-d_prime_approx = sec.cover + 8.0 + 0.5 * c_bar_d_default # Approx d' for calculation
+L = st.session_state.span
+d_prime_approx = sec.cover + 8.0 + 0.5 * st.session_state.c_bar_d_default 
 
-self_wt = mat.density * (b/1000.0) * (D/1000.0)
-wall_kNpm = wall_density * (wall_thk/1000.0) * wall_h if use_wall and wall_thk>0 and wall_h>0 else 0.0
-w_DL = self_wt + finishes + wall_kNpm
-w_LL = ll
+self_wt = mat.density * (st.session_state.b/1000.0) * (st.session_state.D/1000.0)
+wall_kNpm = mat.density * (st.session_state.wall_thk/1000.0) * st.session_state.wall_h if st.session_state.use_wall and st.session_state.wall_thk>0 and st.session_state.wall_h>0 else 0.0
+w_DL = self_wt + st.session_state.finishes + wall_kNpm
+w_LL = st.session_state.ll
 
-if action_mode == "Direct design actions":
-    Mu_kNm = float(abs(Mu_in))
-    Vu_kN  = float(abs(Vu_in))
-    Tu_kNm = float(abs(Tu_in))
-    Nu_kN  = float(Nu_in)
+if st.session_state.action_mode == "Direct design actions":
+    Mu_kNm = float(abs(st.session_state.Mu_in))
+    Vu_kN  = float(abs(st.session_state.Vu_in))
+    Tu_kNm = float(abs(st.session_state.Tu_in))
+    Nu_kN  = float(st.session_state.Nu_in)
     w_ULS_15 = 0.0 
     w_service = w_DL + w_LL
 else:
     w_ULS_15 = 1.5 * (w_DL + w_LL) 
     w_service = w_DL + w_LL
     
-    if support=="Simply Supported": kM, kV = 1/8, 0.5
-    elif support=="Cantilever": kM, kV = 1/2, 1.0
+    if st.session_state.support=="Simply Supported": kM, kV = 1/8, 0.5
+    elif st.session_state.support=="Cantilever": kM, kV = 1/2, 1.0
     else: kM, kV = 1/12, 0.6 
 
     Mu_kNm = kM * w_ULS_15 * (L**2)
     Vu_kN  = kV * w_ULS_15 * L
 
-    if include_eq and eq_coeff > 0:
+    if st.session_state.include_eq and st.session_state.eq_coeff > 0:
         w_ULS_12 = 1.2 * (w_DL + w_LL)
-        Mu_kNm += eq_coeff * w_ULS_12 * (L**2) 
+        Mu_kNm += st.session_state.eq_coeff * w_ULS_12 * (L**2) 
     
     Tu_kNm, Nu_kN = 0.0, 0.0
 
 Mu_lim = mu_lim_rect(mat.fck, sec.b, d, mat.fy)
-Ast_min = (0.85 * b * d) / fy 
-Ast_max = 0.04 * b * D 
+Ast_min = (0.85 * st.session_state.b * d) / st.session_state.fy 
+Ast_max = 0.04 * st.session_state.b * st.session_state.D 
 
-# Flexure design for Ast_req and Asc_req
 if Mu_kNm <= Mu_lim:
     Ast_req = ast_singly(Mu_kNm, mat.fy, d)
     Asc_req = 0.0
-    Ast_lim_req = Ast_req # Not strictly correct, but used for comparison
     moment_type = "Singly"
 else:
-    Ast_req, Asc_req, Ast_lim_req = ast_asc_doubly(Mu_kNm, Mu_lim, mat.fck, mat.fy, d, d_prime_approx)
+    Ast_req, Asc_req, Ast_lim_req = ast_asc_doubly(Mu_kNm, Mu_lim, mat.fck, mat.fy, d, d_prime_approx, sec.b)
     moment_type = "Doubly"
 
 Vu_eff_kN = Vu_kN + (1.6 * Tu_kNm * 1000.0 / sec.b) if Tu_kNm > 0 else Vu_kN
@@ -259,7 +320,7 @@ st.header("2. Design Calculations and Checks")
 st.markdown("---")
 
 st.subheader("2.1 Load and Factored Action Summary (IS 456: Cl. 18.2)")
-st.write(f"**Section**: $b={int(b)}$ mm, $D={int(D)}$ mm, $d$ (effective depth) $= **{d:.0f}**$ mm. $d'$ (comp. cover) $\\approx **{d_prime_approx:.0f}**$ mm.")
+st.write(f"**Section**: $b={int(st.session_state.b)}$ mm, $D={int(st.session_state.D)}$ mm, $d$ (effective depth) $= **{d:.0f}**$ mm. $d'$ (comp. cover) $\\approx **{d_prime_approx:.0f}**$ mm.")
 st.write(f"**Factored UDL ($w_u$)**: **{w_ULS_15:.2f}** kN/m.")
 st.write(f"**Design Moment ($M_u$)**: **{Mu_kNm:.1f} kN·m**. **Design Shear ($V_u$)**: **{Vu_kN:.1f} kN**.")
 st.write(f"**Ultimate Moment Capacity ($M_{{u,lim}}$)**: **{Mu_lim:.1f}** kN·m.")
@@ -276,13 +337,13 @@ st.markdown(f"**Minimum $A_{{st}}$ (Cl 26.5.1.1)**: {Ast_min:.0f} mm². **Maximu
 
 col_t1, col_t2 = st.columns(2)
 with col_t1:
-    t_bar_d = st.selectbox("Bottom Bar $\phi$ (mm)", [12, 16, 20, 25, 28, 32], index=2 if Ast_req > 1000 else 1)
+    st.session_state.t_bar_d = st.selectbox("Bottom Bar $\phi$ (mm)", [12, 16, 20, 25, 28, 32], index=[12, 16, 20, 25, 28, 32].index(st.session_state.t_bar_d))
 with col_t2:
-    t_bar_count = st.number_input("Bottom Bar Count (Total)", value=max(2, math.ceil(Ast_req / (math.pi*t_bar_d**2/4.0))), min_value=2, step=1)
+    st.session_state.t_bar_count = st.number_input("Bottom Bar Count (Total)", value=max(2, math.ceil(Ast_req / (math.pi*st.session_state.t_bar_d**2/4.0))) if not st.session_state.action_mode else st.session_state.t_bar_count, min_value=2, step=1)
 
-Ast_prov = (math.pi*(t_bar_d**2)/4.0) * t_bar_count 
+Ast_prov = (math.pi*(st.session_state.t_bar_d**2)/4.0) * st.session_state.t_bar_count 
 
-st.write(f"**Provided Tension Steel ($A_{{st, prov}}$)**: **{Ast_prov:.0f}** mm² (from {t_bar_count} $\\times \phi{t_bar_d}$ bars).")
+st.write(f"**Provided Tension Steel ($A_{{st, prov}}$)**: **{Ast_prov:.0f}** mm² (from {st.session_state.t_bar_count} $\\times \phi{st.session_state.t_bar_d}$ bars).")
 
 if Ast_prov < Ast_req:
     st.error("❌ $A_{{st, prov}} < A_{{st, req}}$. **INCREASE BOTTOM REINFORCEMENT.**")
@@ -301,12 +362,12 @@ if moment_type == "Doubly":
 
     col_c1, col_c2 = st.columns(2)
     with col_c1:
-        c_bar_d = st.selectbox("Top Bar $\phi$ (mm)", [12, 16, 20, 25], index=0)
+        st.session_state.c_bar_d = st.selectbox("Top Bar $\phi$ (mm)", [12, 16, 20, 25], index=[12, 16, 20, 25].index(st.session_state.c_bar_d))
     with col_c2:
-        c_bar_count = st.number_input("Top Bar Count (Total)", value=max(2, math.ceil(Asc_req / (math.pi*c_bar_d**2/4.0))), min_value=2, step=1)
+        st.session_state.c_bar_count = st.number_input("Top Bar Count (Total)", value=max(2, math.ceil(Asc_req / (math.pi*st.session_state.c_bar_d**2/4.0))) if not st.session_state.action_mode else st.session_state.c_bar_count, min_value=2, step=1)
 
-    Asc_prov = (math.pi*(c_bar_d**2)/4.0) * c_bar_count 
-    st.write(f"**Provided Compression Steel ($A_{{sc, prov}}$)**: **{Asc_prov:.0f}** mm² (from {c_bar_count} $\\times \phi{c_bar_d}$ bars).")
+    Asc_prov = (math.pi*(st.session_state.c_bar_d**2)/4.0) * st.session_state.c_bar_count 
+    st.write(f"**Provided Compression Steel ($A_{{sc, prov}}$)**: **{Asc_prov:.0f}** mm² (from {st.session_state.c_bar_count} $\\times \phi{st.session_state.c_bar_d}$ bars).")
     
     if Asc_prov < Asc_req:
         st.error("❌ $A_{{sc, prov}} < A_{{sc, req}}$. **INCREASE TOP REINFORCEMENT.**")
@@ -315,13 +376,12 @@ if moment_type == "Doubly":
     else:
         st.success("✅ Provided Compression Reinforcement check passed.")
 else:
-    # Use default c_bar_d for Ld and drawing purposes if not doubly reinforced
-    c_bar_d = c_bar_d_default
-    c_bar_count = 2 # Minimum two top bars for stirrups
+    st.session_state.c_bar_d = st.session_state.c_bar_d_default
+    st.session_state.c_bar_count = 2 # Minimum two top bars for stirrups
+    Asc_prov = (math.pi*(st.session_state.c_bar_d**2)/4.0) * st.session_state.c_bar_count 
 
 st.subheader("2.3 Shear Design (IS 456: Cl. 40 & 41)")
 
-# Call shear_design after Ast_prov is available
 shear_res = shear_design(Vu_eff_kN, sec.b, d, mat.fck, mat.fy, Ast_prov)
 
 st.write(f"**Equivalent Shear ($V_{{e}}$)**: $V_u + 1.6 T_u/b = **{Vu_eff_kN:.1f}**$ kN.")
@@ -342,25 +402,25 @@ st.subheader("2.4 Provided Shear Reinforcement (Stirrups) $\leftarrow$ Customize
 
 col_s1, col_s2, col_s3 = st.columns(3)
 with col_s1:
-    stirrup_d = st.selectbox("Stirrup $\phi$ (mm)", [6, 8, 10, 12], index=1)
+    st.session_state.stirrup_d = st.selectbox("Stirrup $\phi$ (mm)", [6, 8, 10, 12], index=[6, 8, 10, 12].index(st.session_state.stirrup_d))
 with col_s2:
-    stirrup_legs = st.number_input("Stirrup Legs (n)", value=2, min_value=2, max_value=4, step=2)
+    st.session_state.stirrup_legs = st.number_input("Stirrup Legs (n)", value=st.session_state.stirrup_legs, min_value=2, max_value=4, step=2)
 with col_s3:
-    Asv_prov = stirrup_legs * math.pi * (stirrup_d**2) / 4.0
+    Asv_prov = st.session_state.stirrup_legs * math.pi * (st.session_state.stirrup_d**2) / 4.0
     
-    s_v_req_calc = (0.87 * fy * Asv_prov * d) / (Vus_req_kN * 1e3) if Vus_req_kN > 0 else float('inf')
-    s_v_min_calc = (0.87 * fy * Asv_prov) / (0.4 * b)
+    s_v_req_calc = (0.87 * st.session_state.fy * Asv_prov * d) / (Vus_req_kN * 1e3) if Vus_req_kN > 0 else float('inf')
+    s_v_min_calc = (0.87 * st.session_state.fy * Asv_prov) / (0.4 * st.session_state.b)
     s_v_max_abs = min(0.75 * d, 300.0)
 
     control_spacing = min(s_v_req_calc, s_v_min_calc, s_v_max_abs)
     
     default_spacing = int(clamp(control_spacing, 50, s_v_max_abs))
-    s_v_prov = st.number_input("Provided Spacing $s_v$ (mm)", value=default_spacing, min_value=50, step=10)
+    st.session_state.s_v_prov = st.number_input("Provided Spacing $s_v$ (mm)", value=default_spacing if not st.session_state.action_mode else st.session_state.s_v_prov, min_value=50, step=10)
 
-Vus_prov_kN = (0.87 * fy * Asv_prov * d) / (s_v_prov * 1e3) 
+Vus_prov_kN = (0.87 * st.session_state.fy * Asv_prov * d) / (st.session_state.s_v_prov * 1e3) 
 
-if Vus_prov_kN >= Vus_req_kN and s_v_prov <= s_v_max_abs:
-    st.success(f"✅ Shear Reinforcement passed: $\\phi{stirrup_d}$ mm {stirrup_legs}-leg @ **{s_v_prov} mm** c/c.")
+if Vus_prov_kN >= Vus_req_kN and st.session_state.s_v_prov <= s_v_max_abs:
+    st.success(f"✅ Shear Reinforcement passed: $\\phi{st.session_state.stirrup_d}$ mm {st.session_state.stirrup_legs}-leg @ **{st.session_state.s_v_prov} mm** c/c.")
     st.write(f"Capacity $V_{{us,prov}}$ = **{Vus_prov_kN:.1f} kN** (Required {Vus_req_kN:.1f} kN).")
     st.write(f"Maximum Allowed Spacing (Cl 26.5.1.5): **{s_v_max_abs:.0f} mm**.")
 else:
@@ -370,14 +430,14 @@ else:
 
 
 # Serviceability (L/d) and Development Length
-base_Ld = LD_LIMITS[support]
+base_Ld = LD_LIMITS[st.session_state.support]
 p_t_service = 100.0 * Ast_prov / (sec.b * d)
 mod = clamp(1.0 + 0.15 * (p_t_service - 1.0), 0.8, 1.3) 
 allowable_L_over_d = base_Ld * mod
 actual_L_over_d = (L * 1000.0) / d
 
-Ld_tension = ld_required(mat.fck, mat.fy, t_bar_d_default, tension=True)
-Ld_comp = ld_required(mat.fck, mat.fy, c_bar_d_default, tension=False) 
+Ld_tension = ld_required(mat.fck, mat.fy, st.session_state.t_bar_d_default, tension=True)
+Ld_comp = ld_required(mat.fck, mat.fy, st.session_state.c_bar_d_default, tension=False) 
 
 st.subheader("2.5 Serviceability Check (Deflection Control - L/d)")
 st.write(f"**Allowable $L/d$**: **{allowable_L_over_d:.1f}**. **Actual $L/d$**: **{actual_L_over_d:.1f}**.")
@@ -388,12 +448,12 @@ else:
     st.error("❌ **L/d Check Failed**. Increase depth $D$ or provide compression steel.")
 
 st.subheader("2.6 Development Length ($L_d$) and Ductile Detailing (IS 13920)")
-st.write(f"**Required Development Length $L_d$ (Tension)**: **{Ld_tension:.0f}** mm (for $\\phi={t_bar_d_default}$ mm).")
-st.write(f"**Required Development Length $L_d$ (Compression)**: **{Ld_comp:.0f}** mm (for $\\phi={c_bar_d_default}$ mm).")
+st.write(f"**Required Development Length $L_d$ (Tension)**: **{Ld_tension:.0f}** mm (for $\\phi={st.session_state.t_bar_d_default}$ mm).")
+st.write(f"**Required Development Length $L_d$ (Compression)**: **{Ld_comp:.0f}** mm (for $\\phi={st.session_state.c_bar_d_default}$ mm).")
 
-if ductile:
+if st.session_state.ductile:
     hinge_len_mm = max(2*d, 600)
-    phi_main = max(12, t_bar_d) 
+    phi_main = max(12, st.session_state.t_bar_d) 
     max_hoop = min(0.25*d, 8*phi_main, 100)
 
     st.warning("⚠️ **IS 13920 Advisory Checks**")
@@ -410,11 +470,11 @@ st.markdown("---")
 st.subheader("3.1 Factored Bending Moment, Shear Force, and Deflection Diagrams")
 
 xs = np.linspace(0, L, 50)
-if action_mode == "Derive from loads":
-    if support=="Simply Supported": 
+if st.session_state.action_mode == "Derive from loads":
+    if st.session_state.support=="Simply Supported": 
         M = [-1 * w_ULS_15 * x * (L - x) / 2 for x in xs] 
         V = [w_ULS_15 * (L / 2 - x) for x in xs]
-    elif support=="Cantilever":
+    elif st.session_state.support=="Cantilever":
         M = [0.5 * w_ULS_15 * (L - x)**2 for x in xs] 
         V = [w_ULS_15 * (L - x) for x in xs]
     else: 
@@ -428,30 +488,26 @@ else:
 dfM = pd.DataFrame({"x": xs, "M (kN·m)": M}).set_index("x")
 dfV = pd.DataFrame({"x": xs, "V (kN)": V}).set_index("x")
 
-# Bending Moment Diagram (Inverted)
 fig_M = px.line(dfM, y="M (kN·m)", title="Factored Bending Moment Diagram (Sagging Downward)")
 fig_M.update_traces(fill='tozeroy', line_color='rgb(30, 144, 255)')
 fig_M.update_yaxes(autorange='reversed') 
 st.plotly_chart(fig_M, use_container_width=True)
 
-# Shear Force Diagram
 fig_V = px.line(dfV, y="V (kN)", title="Factored Shear Force Diagram (kN)")
 fig_V.update_traces(line_color='rgb(255, 69, 0)')
 st.plotly_chart(fig_V, use_container_width=True)
 
-# Deflection Diagram
-Ec = 5000 * math.sqrt(fck) # N/mm2
-Igross = (b * D**3) / 12 # mm4
-EIkNmm2 = (Ec * 1e-3) * (Igross * 1e-6) # kN.m2 
+Ec = 5000 * math.sqrt(st.session_state.fck)
+Igross = (st.session_state.b * st.session_state.D**3) / 12 
 
 deflection = [0] * len(xs)
-if support=="Simply Supported":
+if st.session_state.support=="Simply Supported":
     w_service_Nmm = w_service * 1000.0 / 1000.0 
     L_mm = L * 1000.0
     for i, x in enumerate(xs):
         x_mm = x * 1000.0
         deflection[i] = -(w_service_Nmm * x_mm * (L_mm**3 - 2*L_mm*x_mm**2 + x_mm**3)) / (24 * Ec * Igross)
-elif support=="Cantilever":
+elif st.session_state.support=="Cantilever":
     w_service_Nmm = w_service * 1000.0 / 1000.0 
     L_mm = L * 1000.0
     for i, x in enumerate(xs):
@@ -466,25 +522,14 @@ fig_D.update_yaxes(title_text="Deflection (mm) [Negative is Up, Positive is Down
 st.plotly_chart(fig_D, use_container_width=True)
 
 st.subheader("3.2 Rebar Layout and Curtailment for Drawing $\leftarrow$ Customize Here")
-st.caption("Use this table **only** to define the visual layout and curtailment. $A_{st, prov}$ for design is from Section 2.2. Lengths are in **meters**.")
+st.caption("Use this table **only** to define the visual layout and curtailment. Lengths are in **meters**.")
 
-# Simplified Rebar Table for Drawing (Initialised based on Section 2.2 input)
-if "rebar_df_draw" not in st.session_state:
+# Initialize or re-sync the drawing table with the current design inputs
+if st.session_state.rebar_df_draw is None or len(st.session_state.rebar_df_draw) == 0:
     st.session_state.rebar_df_draw = pd.DataFrame([
-        # Main Bottom Steel (Continuous)
-        {"position":"bottom","dia_mm":int(t_bar_d),"count":2,"start_m":0.0,"end_m":span},
-        # Additional Bottom Steel (Curtailed)
-        {"position":"bottom","dia_mm":int(t_bar_d),"count":max(0, t_bar_count-2),"start_m":L/8,"end_m":span-L/8},
-        # Top Steel (Continuous)
-        {"position":"top","dia_mm":int(c_bar_d),"count":c_bar_count,"start_m":0.0,"end_m":span},
-    ])
-else:
-    # Update default values in case rebar sizes were changed in Section 2.2
-    # This prevents the initial state from sticking if user changed sizes
-    st.session_state.rebar_df_draw = pd.DataFrame([
-        {"position":"bottom","dia_mm":int(t_bar_d),"count":2,"start_m":0.0,"end_m":span},
-        {"position":"bottom","dia_mm":int(t_bar_d),"count":max(0, t_bar_count-2),"start_m":L/8,"end_m":span-L/8},
-        {"position":"top","dia_mm":int(c_bar_d),"count":c_bar_count,"start_m":0.0,"end_m":span},
+        {"position":"bottom","dia_mm":int(st.session_state.t_bar_d),"count":2,"start_m":0.0,"end_m":L},
+        {"position":"bottom","dia_mm":int(st.session_state.t_bar_d),"count":max(0, st.session_state.t_bar_count-2),"start_m":L/8,"end_m":L-L/8},
+        {"position":"top","dia_mm":int(st.session_state.c_bar_d),"count":st.session_state.c_bar_count,"start_m":0.0,"end_m":L},
     ])
 
 rebar_df_edited = st.data_editor(st.session_state.rebar_df_draw, num_rows="dynamic")
@@ -526,7 +571,7 @@ def draw_cross_section_plotly(b_mm, D_mm, cover_mm, df_rebar):
     place_bars(bottom_bars, y_ref_bottom, is_bottom=True)
     place_bars(top_bars, y_ref_top, is_bottom=False)
 
-    fig.update_layout(title=f"Cross Section $b={int(b)}$mm x $D={int(D)}$mm", height=400, width=500)
+    fig.update_layout(title=f"Cross Section $b={int(st.session_state.b)}$mm x $D={int(st.session_state.D)}$mm", height=400, width=500)
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -566,21 +611,21 @@ def draw_longitudinal_section_plotly(L_m, D_mm, cover_mm, df_rebar):
 
 col_d1, col_d2 = st.columns(2)
 with col_d1:
-    draw_cross_section_plotly(b, D, cover, rebar_df_edited)
+    draw_cross_section_plotly(st.session_state.b, st.session_state.D, st.session_state.cover, rebar_df_edited)
 with col_d2:
-    draw_longitudinal_section_plotly(L, D, cover, rebar_df_edited)
+    draw_longitudinal_section_plotly(L, st.session_state.D, st.session_state.cover, rebar_df_edited)
 
 
 st.header("4. Export Options")
 st.markdown("---")
 
 summary = {
-    "span": [L], "support": [support], "b_mm": [b], "D_mm": [D], "d_eff_mm": [d],
+    "span": [L], "support": [st.session_state.support], "b_mm": [st.session_state.b], "D_mm": [st.session_state.D], "d_eff_mm": [d],
     "Mu_kNm": [Mu_kNm], "Vu_kN": [Vu_kN], "Tu_kNm": [Tu_kNm], "Nu_kN": [Nu_kN],
     "Ast_req_mm2": [Ast_req], "Ast_prov_mm2": [Ast_prov],
-    "Asc_req_mm2": [Asc_req], "Asc_prov_mm2": [Asc_prov if moment_type == "Doubly" else 0.0],
-    "Shear_Stirrup": [f"{stirrup_legs}-leg $\\phi{stirrup_d}$"],
-    "Shear_Spacing_mm": [s_v_prov],
+    "Asc_req_mm2": [Asc_req], "Asc_prov_mm2": [Asc_prov if moment_type == "Doubly" else Asc_prov],
+    "Shear_Stirrup": [f"{st.session_state.stirrup_legs}-leg $\\phi{st.session_state.stirrup_d}$"],
+    "Shear_Spacing_mm": [st.session_state.s_v_prov],
     "Ld_tension_mm": [Ld_tension], "Ld_comp_mm": [Ld_comp],
     "Allowable_L/d": [allowable_L_over_d], "Actual_L/d": [actual_L_over_d],
 }
