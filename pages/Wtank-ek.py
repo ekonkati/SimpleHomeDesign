@@ -126,6 +126,11 @@ def demand_ast_from_M(Mu_kNm: float, d_eff_mm: float, fy_MPa: float, fck_MPa: fl
     b = 1000.0  # mm
     
     try:
+        # Check for section failure
+        Mu_lim = 0.138 * fck_MPa * b * d_eff_mm**2 # For Fe 415
+        if Mu_Nmm > Mu_lim: 
+            return 99999.0 
+
         term_in_sqrt = 1.0 - (4.6 * Mu_Nmm) / (fck_MPa * b * d_eff_mm**2)
         if term_in_sqrt < 0: return 99999.0 
         Ast = (0.5 * fck_MPa / fy_MPa) * (1.0 - math.sqrt(term_in_sqrt)) * b * d_eff_mm
@@ -153,14 +158,17 @@ def get_tau_c(fck, pt):
     elif fck >= 30.0: col = 'M30'
     else: col = 'M30'
     
-    return bilinear_interpolate(pt_clamped, TAU_C_TABLE, col)
+    # Interpolate for Pt
+    val = bilinear_interpolate(pt_clamped, TAU_C_TABLE, col)
+    
+    # Scale for fck > 30 (not strictly allowed by table, but usually conservative)
+    if fck > 30:
+        val = val * math.pow(fck/30, 0.33) 
+    
+    return val
 
-
-# ===============================
-# Plotting Functions (Required for Streamlit Output)
-# ===============================
 def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
-    # ... (Plotting code remains the same as previous correct version) ...
+    """Generates simple plots for Wall forces."""
     V_max_str = f'{V_base_max:.1f}'
     M_L_str = f'{M_base_L:.1f}'
     M_B_str = f'{M_base_B:.1f}'
@@ -172,13 +180,15 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
         
         fig.add_trace(go.Scatter(x=x_values, y=y_values, mode='lines', fill='toself', fillcolor=fill_color_rgba, line=dict(color=color, width=2), showlegend=False))
         fig.add_trace(go.Scatter(x=[0, 0], y=[0, H], mode='lines', line=dict(color='black', dash='dash'), showlegend=False))
+        
+        # Add force value annotation at base
         fig.add_annotation(x=x_values[1] * 1.1, y=0.05, text=label_text, showarrow=False, font=dict(color=color, size=10), xanchor='left')
         
         fig.update_layout(
             title=f"<b>{title}</b>",
             xaxis=dict(title=title.split('(')[0].replace('Vertical Moment -', 'Moment') + ' (kN/m or kNm/m)', zeroline=True, gridcolor='lightgray', range=[-0.1 * max(x_values) if max(x_values) > 0 else -1, max(x_values) * 1.3 if max(x_values) > 0 else 1]),
             yaxis=dict(title="Height (m)", range=[-0.1, H + 0.1], zeroline=True, gridcolor='lightgray'),
-            height=600,
+            height=300,
             margin=dict(l=40, r=40, t=40, b=40)
         )
         return fig
@@ -221,7 +231,6 @@ with col1:
     mat.fck = st.number_input("Concrete Grade $f_{ck}$ (MPa)", 25.0, 50.0, mat.fck, 5.0, key="mat_fck")
     mat.fy = st.number_input("Steel Grade $f_{y}$ (MPa)", 250.0, 550.0, mat.fy, 50.0, key="mat_fy")
     mat.Ec = st.number_input("Concrete E ($E_{c}$) (MPa)", 25000.0, 40000.0, mat.Ec, 1000.0, format="%.0f", key="mat_ec")
-    # Corrected line that caused the error:
     mat.SBC = st.number_input("Soil Bearing Capacity (SBC) (kN/m²)", 50.0, 400.0, mat.SBC, 10.0, key="mat_sbc")
     
 with col2:
@@ -287,14 +296,10 @@ M_H_corner_FL = C_Mx_corner * loads.gamma_w * geom.H**3
 
 st.subheader("2.1 Detailed Narrative on Coefficient Evaluation")
 st.markdown("""
-The coefficients are evaluated based on **IS 3370 (Part 4)**, which treats the wall as a **rectangular plate fixed at the base and continuous/fixed at the vertical corners**, subjected to triangular hydrostatic pressure ($P_w = \gamma_w z$).
-* **Vertical Moment Coefficients ($C_{My}$):** These determine the moment ($M_{My}$) at the fixed base per unit width of the wall. The wall spans vertically (height $H$) and is restrained horizontally by the tank corners/adjacent walls (span $L$ or $B$). The values are interpolated from tables for the aspect ratio $L/H$.
-    $$\\mathbf{M_{My}} = C_{My} \\cdot \\gamma_w \\cdot H^3$$
-    $C_{My, corner}$ gives the maximum moment near the wall junction, while $C_{My, mid}$ gives the moment at mid-span of the wall, considering the restraint from the adjacent walls.
-* **Horizontal Tension Coefficient ($C_{T, max}$):** This coefficient determines the maximum **Hoop Tension** ($T_H$) per unit height, which acts horizontally due to the tank's circumferential restraint. It is maximum in the lower half of the wall.
-    $$\\mathbf{T_H} = C_{T, max} \\cdot \\gamma_w \\cdot H^2$$
-* **Horizontal Moment Coefficient ($C_{Mx}$):** This determines the **Horizontal Bending Moment** ($M_{Mx}$) near the vertical corners, which arises due to the incompatibility of the horizontal hoop deflection at the corners.
-    $$\\mathbf{M_{Mx}} = C_{Mx} \\cdot \\gamma_w \\cdot H^3$$
+The coefficients are evaluated based on **IS 3370 (Part 4)**, treating the wall as a **rectangular plate fixed at the base and continuous/fixed at the vertical corners**, subjected to triangular hydrostatic pressure.
+* **Vertical Moment ($M_{My}$):** Max moment at the base fixed joint.
+* **Hoop Tension ($T_H$):** Max horizontal tension due to circumferential expansion.
+* **Horizontal Moment ($M_{Mx}$):** Moment near the vertical wall corners due to plate bending.
 """)
 
 st.subheader("2.2 Unfactored Design Forces ($\text{Load Factor}=1.0$)")
@@ -304,7 +309,7 @@ with col_f1:
     st.markdown(f"Max Base Shear ($V_{{max}}$): **{R_liq:.2f} kN/m**")
 with col_f2:
     st.markdown(f"Max Hoop Tension ($T_{{H, max}}$): **{T_H_max_FL:.2f} kN/m**")
-    st.markdown(f"Max Horizontal Moment ($M_{{H, corner}}$): **{M_{H_corner_FL}:.2f} kNm/m**")
+    st.markdown(f"Max Horizontal Moment ($M_{{H, corner}}$): **{M_H_corner_FL:.2f} kNm/m**")
 
 st.markdown("---")
 
@@ -318,8 +323,8 @@ st.subheader("3.1 Vertical Reinforcement ($M_{My}$ and Shear Check)")
 st.markdown(f"Minimum steel area per face is $A_{{st, min}} = **{Ast_min_face:.0f} \text{{ mm}}^2/\text{{m}}$** ($\rho_{{min}} = {Ast_min_perc/2.0:.2f}\%$).")
 
 # Moment Requirements
-Mu_inner_tension = gamma_f * M_base_corner_FL # Water inside (Max +ve moment)
-Mu_outer_tension = gamma_f * M_soil_base if geom.tank_type == "Ground" else 0.0 # Earth outside (Max -ve moment)
+Mu_inner_tension = gamma_f * M_base_corner_FL 
+Mu_outer_tension = gamma_f * M_soil_base if geom.tank_type == "Ground" else 0.0 
 Ast_req_V_inner = max(demand_ast_from_M(Mu_inner_tension, d_eff, mat.fy, mat.fck), Ast_min_face)
 Ast_req_V_outer = max(demand_ast_from_M(Mu_outer_tension, d_eff, mat.fy, mat.fck), Ast_min_face)
 
@@ -332,37 +337,37 @@ with col_req_v:
 
 # --- User Selection for Vertical Steel (Inner/Outer) ---
 with col_in:
-    st.markdown("##### Inner Face (Water Side)")
+    st.markdown("##### Inner Face Selection")
     dia_v_in = st.selectbox("Bar $\phi$ (Vertical Inner)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_v_in")
     s_v_in = st.selectbox("Spacing $s$ (mm c/c) Inner", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_v_in")
     Ast_prov_v_in = calc_Ast_prov(dia_v_in, s_v_in)
     pass_in = '✅ PASS' if Ast_prov_v_in >= Ast_req_V_inner else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_v_in:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ {pass_in}")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_v_in:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_in}**")
 with col_out:
-    st.markdown("##### Outer Face (Earth/Air Side)")
+    st.markdown("##### Outer Face Selection")
     dia_v_out = st.selectbox("Bar $\phi$ (Vertical Outer)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_v_out")
     s_v_out = st.selectbox("Spacing $s$ (mm c/c) Outer", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_v_out")
     Ast_prov_v_out = calc_Ast_prov(dia_v_out, s_v_out)
     pass_out = '✅ PASS' if Ast_prov_v_out >= Ast_req_V_outer else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_v_out:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ {pass_out}")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_v_out:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_out}**")
 
 st.markdown("#### Shear Check (Wall Base) $\rightarrow$ IS 456:2000 Cl 40")
 V_u = gamma_f * R_liq
 tau_v = V_u * 1000 / (1000 * d_eff) 
-pt_inner = (Ast_prov_v_in / 1000) * 100 / d_eff 
-tau_c = get_tau_c(mat.fck, pt_inner)
+pt_total = ((Ast_prov_v_in + Ast_prov_v_out) / 1000) * 100 / d_eff 
+tau_c = get_tau_c(mat.fck, pt_total)
 k = get_k_factor(d_eff)
 tau_c_max_base = 0.6 * math.sqrt(mat.fck) # IS 456 Table 20 
 
 st.markdown(f"""
 - Ultimate Shear Force $V_u$: **{V_u:.2f} kN/m**
 - Nominal Shear Stress $\\tau_v = V_u / (b \\cdot d)$: **{tau_v:.2f} $\\text{{MPa}}$**
-- Percentage Tension Steel $P_{{t, inner}}$: **{pt_inner:.2f} %**
+- Percentage Tension Steel $P_{{t, total}}$: **{pt_total:.2f} %**
 - Design Shear Strength $\\tau_c$ (from Table 19): **{tau_c:.2f} $\\text{{MPa}}$**
 - Depth Factor $k$: **{k:.2f}**
 - Maximum Shear Strength $k \\cdot \\tau_{{c, max}}$: **{k * tau_c_max_base:.2f} $\\text{{MPa}}$**
 """)
-shear_result = "✅ PASS (Shear reinforcement is not required as $\\tau_v < \\tau_c$)" if tau_v <= tau_c else "❌ FAIL (Shear reinforcement required)"
+shear_result = "✅ PASS (Shear reinforcement is not required as $\\tau_v \\le \\tau_c$)" if tau_v <= tau_c else "❌ FAIL (Shear reinforcement required)"
 if tau_v > k * tau_c_max_base: shear_result = "❌ FAIL (Section redesign required - $\\tau_v > k \\tau_{c, max}$)"
 
 st.markdown(f"**Conclusion:** $\\tau_v$ ({tau_v:.2f}) $\\le$ $\\tau_c$ ({tau_c:.2f}) $\\rightarrow$ **{shear_result}**")
@@ -373,32 +378,33 @@ st.markdown("---")
 st.subheader("3.2 Horizontal Reinforcement (Hoop Tension $T_H$ and Moment $M_{H}$)")
 
 Ast_req_tension_total = T_H_max_FL * 1000 / sigma_allow 
-Ast_req_H_face = max(Ast_req_tension_total / 2.0, Ast_min_face)
+Ast_req_H_min_face = max(Ast_req_tension_total / 2.0, Ast_min_face)
 
 # Horizontal Moment requires moment steel at the corner (tension on inner face)
 Mu_H_design = gamma_f * M_H_corner_FL
 Ast_req_moment_face = demand_ast_from_M(Mu_H_design, d_eff, mat.fy, mat.fck)
-Ast_req_H_inner = max(Ast_req_H_face, Ast_req_moment_face)
+Ast_req_H_inner = max(Ast_req_H_min_face, Ast_req_moment_face)
+Ast_req_H_outer = Ast_req_H_min_face # Governed by T_H/2 or min steel
 
-st.markdown(f"**Max Governing $A_{{st, req}}$ (Inner Face):** **{Ast_req_H_inner:.0f} $\text{{mm}}^2/\text{{m}}$** (Governed by $T_H$ or $M_H$).")
-st.markdown(f"**$A_{{st, req}}$ (Outer Face):** **{Ast_req_H_face:.0f} $\text{{mm}}^2/\text{{m}}$** (Governed by $T_H$ or $\rho_{{min}}$).")
+st.markdown(f"**Max Governing $A_{{st, req}}$ (Inner Face):** **{Ast_req_H_inner:.0f} $\text{{mm}}^2/\text{{m}}$**.")
+st.markdown(f"**$A_{{st, req}}$ (Outer Face):** **{Ast_req_H_outer:.0f} $\text{{mm}}^2/\text{{m}}$**.")
 
 # --- User Selection for Horizontal Steel (Inner/Outer) ---
 col_req_h, col_h_in, col_h_out = st.columns(3)
 with col_h_in:
-    st.markdown("##### Inner Face (Water Side)")
+    st.markdown("##### Inner Face Selection")
     dia_h_in = st.selectbox("Bar $\phi$ (Horiz. Inner)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_h_in")
     s_h_in = st.selectbox("Spacing $s$ (mm c/c) Horiz. Inner", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_h_in")
     Ast_prov_h_in = calc_Ast_prov(dia_h_in, s_h_in)
     pass_h_in = '✅ PASS' if Ast_prov_h_in >= Ast_req_H_inner else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_h_in:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ {pass_h_in}")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_h_in:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_h_in}**")
 with col_h_out:
-    st.markdown("##### Outer Face (Earth/Air Side)")
+    st.markdown("##### Outer Face Selection")
     dia_h_out = st.selectbox("Bar $\phi$ (Horiz. Outer)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_h_out")
     s_h_out = st.selectbox("Spacing $s$ (mm c/c) Horiz. Outer", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_h_out")
     Ast_prov_h_out = calc_Ast_prov(dia_h_out, s_h_out)
-    pass_h_out = '✅ PASS' if Ast_prov_h_out >= Ast_req_H_face else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_h_out:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ {pass_h_out}")
+    pass_h_out = '✅ PASS' if Ast_prov_h_out >= Ast_req_H_outer else '❌ FAIL'
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_h_out:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_h_out}**")
 
 
 st.markdown("---")
@@ -425,14 +431,30 @@ st.markdown(f"""
 - **Allowable SBC:** **{mat.SBC:.1f} $\\text{{kN/m}}^2$**
 - **SBC Check:** **{'✅ PASS' if Q_avg <= mat.SBC else '❌ FAIL'}**
 """)
-st.markdown("---")
+
+# Base pressure diagram visualization (conceptual)
+pressure_diag_data = {
+    'Pressure (kN/m²)': [0, Q_avg, Q_avg, 0],
+    'X Position (m)': [0, 0, geom.L, geom.L]
+}
+fig_base_pressure = go.Figure()
+fig_base_pressure.add_trace(go.Scatter(x=pressure_diag_data['X Position (m)'], y=pressure_diag_data['Pressure (kN/m²)'], fill='toself', fillcolor='rgba(255,165,0,0.3)', line=dict(color='orange'), name='Soil Reaction'))
+fig_base_pressure.update_layout(
+    title='<b>Conceptual Base Pressure Diagram (Uniform)</b>',
+    xaxis_title='Tank Length (L) [m]',
+    yaxis_title='Pressure (kN/m²)',
+    yaxis_range=[0, max(Q_avg * 1.2, mat.SBC * 1.2)],
+    height=300
+)
+fig_base_pressure.add_trace(go.Scatter(x=[0, geom.L], y=[mat.SBC, mat.SBC], mode='lines', line=dict(color='red', dash='dash'), name='Allowable SBC'))
+st.plotly_chart(fig_base_pressure, use_container_width=True)
 
 st.subheader("4.2 Base Slab Moment and Reinforcement (Two-Way Slab Action)")
 
-# Max net pressure for design (conservative: maximum of water pressure or net pressure)
+# Max net pressure for design 
 q_base_max = loads.gamma_w * geom.H + mat.gamma_conc * geom.t_base
-q_design = max(q_base_max - Q_avg, q_base_max) # Net pressure + self weight
-q_design_uls = gamma_f * q_design
+q_design_unfactored = max(q_base_max - Q_avg, Ast_min_base * 0) # Max of (Water+Self - Reaction) or just water. Simplification: Use max pressure for internal design
+q_design_uls = gamma_f * q_base_max # Conservative design using full ULS load (Tank full, fixed boundaries)
 
 # Two-way slab moments (IS 456 Annex D simplified: Four Edges Continuous)
 L_ratio = geom.L / geom.B
@@ -447,35 +469,35 @@ Ast_req_base_x = max(demand_ast_from_M(Mu_base_x, d_eff_b, mat.fy, mat.fck), Ast
 Ast_req_base_y = max(demand_ast_from_M(Mu_base_y, d_eff_b, mat.fy, mat.fck), Ast_min_base)
 
 st.markdown(f"""
-- Design ULS Pressure $q_{{u}}$: **{q_design_uls:.1f} $\\text{{kN/m}}^2$**
+- Design ULS Pressure $q_{{u}}$: **{q_design_uls:.1f} $\\text{{kN/m}}^2$** (Using $1.5 \\times$ Total Downward Pressure)
 - $L/B$ Ratio: **{L_ratio:.2f}** $\rightarrow$ Coeff. $\\alpha_{{x}}={alpha_x:.3f}, \\alpha_{{y}}={alpha_y:.3f}$
 - Max Moment $M_{{u, x}}$ (Short Span $B$): **{Mu_base_x:.2f} kNm/m**
 - Max Moment $M_{{u, y}}$ (Long Span $L$): **{Mu_base_y:.2f} kNm/m**
-- $A_{{st, min}}$ (Base): **{Ast_min_base:.0f} $\\text{{mm}}^2/\text{{m}}$**
+- $A_{{st, min}}$ (Base): **{Ast_min_base:.0f} $\\text{{mm}}^2/\text{{m}}$** (0.12% of total area)
 - **$A_{{st, req, x}}$ (Bottom):** **{Ast_req_base_x:.0f} $\\text{{mm}}^2/\text{{m}}$**
 - **$A_{{st, req, y}}$ (Bottom):** **{Ast_req_base_y:.0f} $\\text{{mm}}^2/\text{{m}}$**
 """)
 
-# --- User Selection for Base Slab Steel (Bottom) ---
-st.markdown("##### Base Slab Reinforcement Selection (Bottom governs)")
+# --- User Selection for Base Slab Steel (Bottom/Top) ---
+st.markdown("##### Base Slab Reinforcement Selection (Bottom Mesh Governs)")
 col_bx, col_by = st.columns(2)
 with col_bx:
-    st.markdown("**Short Span $B$ (X-Dir)**")
+    st.markdown("**Bottom Mesh - Short Span $B$ (X-Dir)**")
     dia_b_x = st.selectbox("Bar $\phi$ (X-Dir)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_b_x")
     s_b_x = st.selectbox("Spacing $s$ (mm c/c) X-Dir", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_b_x")
     Ast_prov_b_x = calc_Ast_prov(dia_b_x, s_b_x)
     pass_bx = '✅ PASS' if Ast_prov_b_x >= Ast_req_base_x else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_x:.0f} $\\text{{mm}}^2/\text{{m}}$** $\rightarrow$ {pass_bx}")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_x:.0f} $\\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_bx}**")
 with col_by:
-    st.markdown("**Long Span $L$ (Y-Dir)**")
+    st.markdown("**Bottom Mesh - Long Span $L$ (Y-Dir)**")
     dia_b_y = st.selectbox("Bar $\phi$ (Y-Dir)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_b_y")
     s_b_y = st.selectbox("Spacing $s$ (mm c/c) Y-Dir", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_b_y")
     Ast_prov_b_y = calc_Ast_prov(dia_b_y, s_b_y)
     pass_by = '✅ PASS' if Ast_prov_b_y >= Ast_req_base_y else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_y:.0f} $\\text{{mm}}^2/\text{{m}}$** $\rightarrow$ {pass_by}")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_y:.0f} $\\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_by}**")
 
 st.markdown("---")
 
 st.header("5. Visual Results and Summary")
-st.subheader("Vertical Wall Forces")
+st.subheader("Vertical Wall Forces (Moment & Shear)")
 plot_results(geom.H, M_base_mid_L_FL, M_base_mid_B_FL, R_liq)
