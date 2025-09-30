@@ -346,8 +346,8 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
         'Pp_allow': Pp_allow, 'F_friction': F_friction, 'F_cohesion': F_cohesion,
         'e': e_final, 'x_res': x_res_final, 'q_avg': V_final / geo.B, 'q_max': q_max, 'q_min': q_min,
         'SBC_allow': bearing.SBC_allow,
-        'V_uls1': V1_uls, 'Mr_uls1': Mr1_uls, 'q_max1': q_max1,
-        'V_uls2': V2_uls, 'Mr_uls2': Mr2_uls, 'q_max2': q_max2,
+        'V_uls1': V1_uls, 'Mr_uls1': Mr1_uls, 'q_max1': q_max1, 'q_min1': q_min1, # <-- FIX: Added q_min1
+        'V_uls2': V2_uls, 'Mr_uls2': Mr2_uls, 'q_max2': q_max2, 'q_min2': q_min2, # <-- FIX: Added q_min2
         'Mo_uls': Mo_uls, 'H_uls': H_uls
     }
 
@@ -424,6 +424,7 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
     M_total_resisting = M_W_soil + M_W_surcharge + M_W_base
     
     # Uplift Load (Minimum Uplift Pressure - ULS 0.9)
+    # FIX: q_max1 and q_min1 are now accessible
     q_max_heel = stab['q_max1'] # Max Downward Check - Max V (ULS 1.5)
     q_min_heel = stab['q_min1']
     
@@ -460,7 +461,8 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
 
 # ------------------------- Drawings (Matplotlib) ------------------------- #
 
-# (No changes to plotting functions: plot_wall_section, plot_pressure_diagram, plot_load_resultants, make_boq)
+# (plot_wall_section, plot_pressure_diagram, plot_load_resultants, make_boq functions remain unchanged)
+
 def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bearing: Bearing, show_rebar=True):
     """
     Plots the wall section geometry, reinforcement schematic, and bearing pressure.
