@@ -108,6 +108,7 @@ class Loads:
     phi: float = 30.0   
     mu_base: float = 0.5 
     z_g_zone: int = 3   
+    Hwt: float = 4.3    # m (Water table height)
 
 # ===============================
 # Engineering Helper Functions
@@ -260,15 +261,23 @@ with col3:
     if geom.tank_type == "Ground":
         loads.gamma_s = st.number_input("Soil Density $\gamma_{s}$ (kN/m³)", 15.0, 25.0, loads.gamma_s, 0.5, key="load_gs")
         loads.K0 = st.number_input("Earth Pressure Coeff. $K_{0}$", 0.3, 1.0, loads.K0, 0.05, key="load_k0")
+        loads.Hwt = st.number_input("Water Table Height $H_{wt}$ (m) (for Buoyancy)", 0.0, geom.H + geom.t_base + 1.0, loads.Hwt, 0.1, key="load_hwt")
+    else:
+        loads.Hwt = 0.0 # No buoyancy concern for elevated tank
     loads.z_g_zone = st.selectbox("Seismic Zone (IS 1893-2)", [2, 3, 4, 5], index=loads.z_g_zone-2 if loads.z_g_zone in [2,3,4,5] else 1, key="load_zone")
 
 # Derived geometric properties
 L_over_H = geom.L / geom.H if geom.H > 0 else 99.0
 tw_mm = geom.t_wall * M_TO_MM
-d_eff = tw_mm - 50.0 # Effective depth for wall steel (approx. average)
+tb_mm = geom.t_base * M_TO_MM 
+d_eff_wall = tw_mm - 50.0 # Effective depth for wall steel (approx. average)
+d_eff_base = tb_mm - 75.0 # Effective depth for base slab steel (approx. average)
+
 Ast_min_perc = 0.35 if geom.t_wall >= 0.20 else 0.25 # IS 3370 Cl 7.1
-A_conc_total = 1000.0 * tw_mm 
-Ast_min_face = (Ast_min_perc / 100.0) * A_conc_total / 2.0
+A_conc_total_wall = 1000.0 * tw_mm 
+Ast_min_face_wall = (Ast_min_perc / 100.0) * A_conc_total_wall / 2.0
+Ast_min_base = (0.12 / 100.0) * 1000 * tb_mm # IS 456 Cl 26.5.2.1
+
 sigma_allow = 130.0 # IS 3370 Cl 8.3 (Fe 415, crack width control)
 gamma_f = 1.5 
 
@@ -309,12 +318,11 @@ M_H_corner_FL = C_Mx_corner * loads.gamma_w * geom.H**3
 st.subheader("2.1 Detailed Narrative on Coefficient Evaluation")
 st.markdown("""
 The coefficients are evaluated based on **IS 3370 (Part 4)**, which treats the wall as a **rectangular plate fixed at the base and continuous/fixed at the vertical corners**, subjected to triangular hydrostatic pressure ($P_w = \\gamma_w z$).
-* **Vertical Moment Coefficients ($C_{My}$):** These determine the vertical moment ($M_{My}$) at the fixed base per unit width of the wall. The wall is considered fixed along its **vertical span $H$ (at the base)** and partially restrained horizontally by the adjacent walls/corners. The moment is calculated as:
+* **Vertical Moment Coefficients ($C_{My}$):** These determine the vertical moment ($M_{My}$) at the fixed base per unit width of the wall. The moment is calculated as:
     $$\\mathbf{M_{My}} = C_{My} \\cdot \\gamma_w \\cdot H^3$$
-    $C_{My, corner}$ is the maximum moment near the vertical corner, and $C_{My, mid}$ is the moment at the horizontal mid-span of the wall.
-* **Horizontal Tension Coefficient ($C_{T, max}$):** This coefficient determines the maximum **Hoop Tension** ($T_H$) per unit height, which acts horizontally due to the tank's circumferential restraint.
+* **Horizontal Tension Coefficient ($C_{T, max}$):** This coefficient determines the maximum **Hoop Tension** ($T_H$).
     $$\\mathbf{T_H} = C_{T, max} \\cdot \\gamma_w \\cdot H^2$$
-* **Horizontal Moment Coefficient ($C_{Mx}$):** This determines the **Horizontal Bending Moment** ($M_{Mx}$) near the vertical corners, which arises due to the horizontal plate bending (incompatibility of hoop deflection).
+* **Horizontal Moment Coefficient ($C_{Mx}$):** This determines the **Horizontal Bending Moment** ($M_{Mx}$) near the vertical corners.
     $$\\mathbf{M_{Mx}} = C_{Mx} \\cdot \\gamma_w \\cdot H^3$$
 """)
 
@@ -336,13 +344,13 @@ st.header("3. Wall Reinforcement Design")
 
 # --- VERTICAL REINFORCEMENT DESIGN ---
 st.subheader("3.1 Vertical Reinforcement ($M_{My}$ and Shear Check)")
-st.markdown(f"Minimum steel area per face is $A_{{st, min}} = **{Ast_min_face:.0f} \\text{{ mm}}^2/\\text{{m}}$** ($\\rho_{{min}} = {Ast_min_perc/2.0:.2f}\\%$).")
+st.markdown(f"Minimum steel area per face is $A_{{st, min}} = **{Ast_min_face_wall:.0f} \\text{{ mm}}^2/\\text{{m}}$** ($\\rho_{{min}} = {Ast_min_perc/2.0:.2f}\\%$).")
 
 # Moment Requirements
 Mu_inner_tension = gamma_f * M_base_corner_FL 
 Mu_outer_tension = gamma_f * M_soil_base if geom.tank_type == "Ground" else 0.0 
-Ast_req_V_inner = max(demand_ast_from_M(Mu_inner_tension, d_eff, mat.fy, mat.fck), Ast_min_face)
-Ast_req_V_outer = max(demand_ast_from_M(Mu_outer_tension, d_eff, mat.fy, mat.fck), Ast_min_face)
+Ast_req_V_inner = max(demand_ast_from_M(Mu_inner_tension, d_eff_wall, mat.fy, mat.fck), Ast_min_face_wall)
+Ast_req_V_outer = max(demand_ast_from_M(Mu_outer_tension, d_eff_wall, mat.fy, mat.fck), Ast_min_face_wall)
 
 col_req_v, col_in, col_out = st.columns(3)
 
@@ -369,11 +377,11 @@ with col_out:
 
 st.markdown("#### Shear Check (Wall Base) $\\rightarrow$ IS 456:2000 Cl 40")
 V_u = gamma_f * R_liq
-tau_v = V_u * 1000 / (1000 * d_eff) 
+tau_v = V_u * 1000 / (1000 * d_eff_wall) 
 # P_t is the percentage of tension steel (Ast_prov_v_in governs for max moment)
-pt_inner = (Ast_prov_v_in / 1000) * 100 / d_eff  
+pt_inner = (Ast_prov_v_in / 1000) * 100 / d_eff_wall  
 tau_c = get_tau_c(mat.fck, pt_inner)
-k = get_k_factor(d_eff)
+k = get_k_factor(d_eff_wall)
 tau_c_max_base = 0.6 * math.sqrt(mat.fck) # IS 456 Table 20 
 
 st.markdown(f"""
@@ -395,11 +403,11 @@ st.markdown("---")
 st.subheader("3.2 Horizontal Reinforcement (Hoop Tension $T_H$ and Moment $M_{H}$)")
 
 Ast_req_tension_total = T_H_max_FL * 1000 / sigma_allow 
-Ast_req_H_min_face = max(Ast_req_tension_total / 2.0, Ast_min_face)
+Ast_req_H_min_face = max(Ast_req_tension_total / 2.0, Ast_min_face_wall)
 
 # Horizontal Moment requires moment steel at the corner (tension on inner face)
 Mu_H_design = gamma_f * M_H_corner_FL
-Ast_req_moment_face = demand_ast_from_M(Mu_H_design, d_eff, mat.fy, mat.fck)
+Ast_req_moment_face = demand_ast_from_M(Mu_H_design, d_eff_wall, mat.fy, mat.fck)
 Ast_req_H_inner = max(Ast_req_H_min_face, Ast_req_moment_face)
 Ast_req_H_outer = Ast_req_H_min_face # Governed by T_H/2 or min steel
 
@@ -430,16 +438,38 @@ st.markdown("---")
 # --- BASE SLAB (RAFT) DESIGN SECTION 
 # ----------------------------------------------------
 st.header("4. Base Slab (Raft) Design")
-tb_mm = geom.t_base * M_TO_MM
-d_eff_b = tb_mm - 75.0 
-Ast_min_base = (0.12 / 100.0) * 1000 * tb_mm # IS 456 Cl 26.5.2.1
 
-st.subheader("4.1 Base Pressure Calculation and SBC Check")
 
-W_water = geom.L * geom.B * loads.gamma_w * geom.H
+# Common Weight Calculations
 W_base = geom.L * geom.B * mat.gamma_conc * geom.t_base
 W_walls = 2 * (geom.L + geom.B) * geom.H * mat.gamma_conc * geom.t_wall
-W_total = W_water + W_base + W_walls
+W_dead = W_base + W_walls
+
+# --- 4.1 BUOYANCY STABILITY CHECK ---
+st.subheader("4.1 Buoyancy Stability Check (Tank Empty)")
+
+if geom.tank_type == "Ground":
+    U_total = loads.gamma_w * geom.L * geom.B * loads.Hwt
+    FS_buoyancy = W_dead / U_total if U_total > 0 else 999.0
+    FS_req = 1.2 # Working Stress Method minimum F.S.
+    
+    st.markdown(f"""
+    This check assumes the tank is empty with the **Water Table Height ($H_{{wt}}$) at {loads.Hwt:.2f} m**.
+    - Total Downward Weight $W_{{D}}$ (Self-Weight): $W_{{base}} + W_{{walls}} = $ **{W_dead:.1f} kN**
+    - Total Upward Buoyant Force $U$: $\\gamma_w \\cdot L \\cdot B \\cdot H_{{wt}} = $ **{U_total:.1f} kN**
+    - **Factor of Safety (F.S.):** $\\mathbf{{W_{{D}} / U}} = $ **{FS_buoyancy:.2f}** (Required F.S. $\\ge 1.2$)
+    - **Conclusion:** **{'✅ PASS' if FS_buoyancy >= FS_req else '❌ FAIL: Tank is unstable against flotation!'}**
+    """)
+    if FS_buoyancy < FS_req:
+        st.error("Increase base slab/wall thickness or add a heavy lean concrete mat (PCC) to increase $W_D$.")
+else:
+    st.info("Buoyancy check is only performed for Ground supported tanks.")
+
+# --- 4.2 BASE PRESSURE (TANK FULL) AND SBC CHECK ---
+st.subheader("4.2 Base Pressure (Tank Full) and SBC Check")
+
+W_water = geom.L * geom.B * loads.gamma_w * geom.H
+W_total = W_dead + W_water
 Q_avg = W_total / (geom.L * geom.B)
 
 st.markdown(f"""
@@ -466,56 +496,118 @@ fig_base_pressure.update_layout(
 fig_base_pressure.add_trace(go.Scatter(x=[0, geom.L], y=[mat.SBC, mat.SBC], mode='lines', line=dict(color='red', dash='dash'), name='Allowable SBC'))
 st.plotly_chart(fig_base_pressure, use_container_width=True)
 
-st.subheader("4.2 Base Slab Moment and Reinforcement (Two-Way Slab Action)")
+# --- 4.3 BASE SLAB BENDING (TANK FULL - SAGGING MOMENT) ---
+st.subheader("4.3 Base Slab Bending (Tank Full - Sagging Moment)")
+st.markdown("This load case determines the **bottom reinforcement** (positive moment, tension on bottom) for the central region of the slab, using the net downward pressure.")
 
 # Max net pressure for design 
-q_base_max = loads.gamma_w * geom.H + mat.gamma_conc * geom.t_base
-q_design_unfactored = max(q_base_max - Q_avg, Ast_min_base * 0) 
-q_design_uls = gamma_f * q_base_max 
+q_down_unfactored_per_m2 = loads.gamma_w * geom.H + mat.gamma_conc * geom.t_base
+q_design_uls_down = gamma_f * q_down_unfactored_per_m2 
 
-# Two-way slab moments (IS 456 Annex D simplified: Four Edges Continuous)
-# Mu_x is moment along B (short span) -> controls steel parallel to L
-# Mu_y is moment along L (long span) -> controls steel parallel to B
+# Two-way slab coefficients
 L_ratio = geom.L / geom.B
 L_ratio_clamped = max(1.0, min(2.0, L_ratio))
 L_B_key = min(TWO_WAY_COEF.keys(), key=lambda x: abs(x - L_ratio_clamped))
 alpha_x, alpha_y = TWO_WAY_COEF[L_B_key]
 
-Mu_base_x = alpha_x * q_design_uls * geom.B**2 
-Mu_base_y = alpha_y * q_design_uls * geom.B**2 
+Mu_base_x_bottom = alpha_x * q_design_uls_down * geom.B**2 
+Mu_base_y_bottom = alpha_y * q_design_uls_down * geom.B**2 
 
 # Steel running parallel to L (long side), resisting Mu_x (short span moment)
-Ast_req_parallel_L = max(demand_ast_from_M(Mu_base_x, d_eff_b, mat.fy, mat.fck), Ast_min_base)
+Ast_req_parallel_L_bottom = max(demand_ast_from_M(Mu_base_x_bottom, d_eff_base, mat.fy, mat.fck), Ast_min_base)
 # Steel running parallel to B (short side), resisting Mu_y (long span moment)
-Ast_req_parallel_B = max(demand_ast_from_M(Mu_base_y, d_eff_b, mat.fy, mat.fck), Ast_min_base)
+Ast_req_parallel_B_bottom = max(demand_ast_from_M(Mu_base_y_bottom, d_eff_base, mat.fy, mat.fck), Ast_min_base)
 
 st.markdown(f"""
-- Design ULS Pressure $q_{{u}}$: **{q_design_uls:.1f} $\\text{{kN/m}}^2$** (Using $1.5 \\times$ Total Downward Pressure)
+- Design ULS Downward Pressure $q_{{u, down}}$: **{q_design_uls_down:.1f} $\\text{{kN/m}}^2$** (Water + Base Self-Weight, Factored by 1.5)
 - $L/B$ Ratio: **{L_ratio:.2f}** $\\rightarrow$ Coeff. $\\alpha_{{x}}={alpha_x:.3f}, \\alpha_{{y}}={alpha_y:.3f}$
-- **Moment $M_{{u, x}}$ (Moment along Short Span $B$):** **{Mu_base_x:.2f} kNm/m** (Calculated with $\\alpha_x$, resisted by steel $\\parallel$ to **Long Span $L$**).
-- **Moment $M_{{u, y}}$ (Moment along Long Span $L$):** **{Mu_base_y:.2f} kNm/m** (Calculated with $\\alpha_y$, resisted by steel $\\parallel$ to **Short Span $B$**).
-- $A_{{st, min}}$ (Base): **{Ast_min_base:.0f} $\\text{{mm}}^2/\\text{{m}}$** (0.12% of total area)
-- **$A_{{st, req}} \\parallel L$:** **{Ast_req_parallel_L:.0f} $\\text{{mm}}^2/\\text{{m}}$**
-- **$A_{{st, req}} \\parallel B$:** **{Ast_req_parallel_B:.0f} $\\text{{mm}}^2/\\text{{m}}$**
+- **Moment $M_{{u, x, bottom}}$ (Short Span Moment):** **{Mu_base_x_bottom:.2f} kNm/m** - **Moment $M_{{u, y, bottom}}$ (Long Span Moment):** **{Mu_base_y_bottom:.2f} kNm/m** - $A_{{st, min}}$ (Base): **{Ast_min_base:.0f} $\\text{{mm}}^2/\\text{{m}}$** (0.12% of total area)
+- **$A_{{st, req}} \\parallel L$ (Bottom):** **{Ast_req_parallel_L_bottom:.0f} $\\text{{mm}}^2/\\text{{m}}$**
+- **$A_{{st, req}} \\parallel B$ (Bottom):** **{Ast_req_parallel_B_bottom:.0f} $\\text{{mm}}^2/\\text{{m}}$**
 """)
 
-# --- User Selection for Base Slab Steel (Bottom/Top) ---
-st.markdown("##### Base Slab Reinforcement Selection (Bottom Mesh Governs)")
+# --- User Selection for Base Slab Steel (Bottom Mesh) ---
+st.markdown("##### Bottom Base Slab Reinforcement Selection")
 col_bx, col_by = st.columns(2)
 with col_bx:
-    st.markdown("**Bottom Mesh - Parallel to L (Long Span)**")
-    dia_b_x = st.selectbox("Bar $\\phi$ ($\\parallel L$)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_b_x")
-    s_b_x = st.selectbox("Spacing $s$ (mm c/c) ($\\parallel L$)", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_b_x")
+    st.markdown("**Parallel to L (Long Span)**")
+    dia_b_x = st.selectbox("Bar $\\phi$ ($\\parallel L$ Bottom)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_b_x")
+    s_b_x = st.selectbox("Spacing $s$ (mm c/c) ($\\parallel L$ Bottom)", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_b_x")
     Ast_prov_b_x = calc_Ast_prov(dia_b_x, s_b_x)
-    pass_bx = '✅ PASS' if Ast_prov_b_x >= Ast_req_parallel_L else '❌ FAIL'
+    pass_bx = '✅ PASS' if Ast_prov_b_x >= Ast_req_parallel_L_bottom else '❌ FAIL'
     st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_x:.0f} $\\text{{mm}}^2/\\text{{m}}$** $\\rightarrow$ **{pass_bx}**")
 with col_by:
-    st.markdown("**Bottom Mesh - Parallel to B (Short Span)**")
-    dia_b_y = st.selectbox("Bar $\\phi$ ($\\parallel B$)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_b_y")
-    s_b_y = st.selectbox("Spacing $s$ (mm c/c) ($\\parallel B$)", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_b_y")
+    st.markdown("**Parallel to B (Short Span)**")
+    dia_b_y = st.selectbox("Bar $\\phi$ ($\\parallel B$ Bottom)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_b_y")
+    s_b_y = st.selectbox("Spacing $s$ (mm c/c) ($\\parallel B$ Bottom)", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_b_y")
     Ast_prov_b_y = calc_Ast_prov(dia_b_y, s_b_y)
-    pass_by = '✅ PASS' if Ast_prov_b_y >= Ast_req_parallel_B else '❌ FAIL'
+    pass_by = '✅ PASS' if Ast_prov_b_y >= Ast_req_parallel_B_bottom else '❌ FAIL'
     st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_y:.0f} $\\text{{mm}}^2/\\text{{m}}$** $\\rightarrow$ **{pass_by}**")
+
+# --- 4.4 BASE SLAB BENDING (BUOYANCY/UPLIFT - HOGGING MOMENT) ---
+st.subheader("4.4 Base Slab Bending (Buoyancy/Uplift - Hogging Moment)")
+st.markdown("This load case determines the **top reinforcement** (negative moment, tension on top) for the central region of the slab, due to buoyant uplift when the tank is empty.")
+
+if geom.tank_type == "Ground":
+    # Design Uplift Pressure (Upward Buoyant Pressure - Downward Self-Weight Pressure)
+    q_uplift_unfactored = (loads.gamma_w * loads.Hwt) - (mat.gamma_conc * geom.t_base)
+    
+    if q_uplift_unfactored > 0:
+        q_design_uls_up = gamma_f * q_uplift_unfactored
+        st.markdown(f"Net Upward Buoyant Pressure (Unfactored): $\\mathbf{{q_{{up}}}} = (\\gamma_w \\cdot H_{{wt}}) - (\\gamma_{{conc}} \\cdot t_{{b}}) = $ **{q_uplift_unfactored:.1f} $\\text{{kN/m}}^2$**")
+        st.markdown(f"Design ULS Uplift Pressure $q_{{u, up}}$: **{q_design_uls_up:.1f} $\\text{{kN/m}}^2$** (Factored by 1.5)")
+        
+        Mu_base_x_top = alpha_x * q_design_uls_up * geom.B**2 
+        Mu_base_y_top = alpha_y * q_design_uls_up * geom.B**2 
+
+        # Steel running parallel to L (long side), resisting Mu_x (short span moment)
+        Ast_req_parallel_L_top = max(demand_ast_from_M(Mu_base_x_top, d_eff_base, mat.fy, mat.fck), Ast_min_base)
+        # Steel running parallel to B (short side), resisting Mu_y (long span moment)
+        Ast_req_parallel_B_top = max(demand_ast_from_M(Mu_base_y_top, d_eff_base, mat.fy, mat.fck), Ast_min_base)
+
+        st.markdown(f"""
+        - **Moment $M_{{u, x, top}}$ (Short Span Moment):** **{Mu_base_x_top:.2f} kNm/m** (Hogging, requires **Top Steel $\\parallel L$**)
+        - **Moment $M_{{u, y, top}}$ (Long Span Moment):** **{Mu_base_y_top:.2f} kNm/m** (Hogging, requires **Top Steel $\\parallel B$**)
+        - **$A_{{st, req}} \\parallel L$ (Top):** **{Ast_req_parallel_L_top:.0f} $\\text{{mm}}^2/\\text{{m}}$**
+        - **$A_{{st, req}} \\parallel B$ (Top):** **{Ast_req_parallel_B_top:.0f} $\\text{{mm}}^2/\\text{{m}}$**
+        """)
+        
+        # --- User Selection for Base Slab Steel (Top Mesh) ---
+        st.markdown("##### Top Base Slab Reinforcement Selection (Hogging Moment)")
+        col_tx, col_ty = st.columns(2)
+        with col_tx:
+            st.markdown("**Parallel to L (Long Span)**")
+            dia_t_x = st.selectbox("Bar $\\phi$ ($\\parallel L$ Top)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_t_x")
+            s_t_x = st.selectbox("Spacing $s$ (mm c/c) ($\\parallel L$ Top)", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_t_x")
+            Ast_prov_t_x = calc_Ast_prov(dia_t_x, s_t_x)
+            pass_tx = '✅ PASS' if Ast_prov_t_x >= Ast_req_parallel_L_top else '❌ FAIL'
+            st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_t_x:.0f} $\\text{{mm}}^2/\\text{{m}}$** $\\rightarrow$ **{pass_tx}**")
+        with col_ty:
+            st.markdown("**Parallel to B (Short Span)**")
+            dia_t_y = st.selectbox("Bar $\\phi$ ($\\parallel B$ Top)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_t_y")
+            s_t_y = st.selectbox("Spacing $s$ (mm c/c) ($\\parallel B$ Top)", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_t_y")
+            Ast_prov_t_y = calc_Ast_prov(dia_t_y, s_t_y)
+            pass_ty = '✅ PASS' if Ast_prov_t_y >= Ast_req_parallel_B_top else '❌ FAIL'
+            st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_t_y:.0f} $\\text{{mm}}^2/\\text{{m}}$** $\\rightarrow$ **{pass_ty}**")
+
+    else:
+        st.info("The buoyant pressure is less than the raft's self-weight. Hogging moment due to buoyancy is not critical. Minimum steel should be provided at the top.")
+        st.markdown(f"- **Top Steel Requirement:** Provide $A_{{st, min}}$: **{Ast_min_base:.0f} $\\text{{mm}}^2/\\text{{m}}$** in both directions.")
+        # Need to include select boxes even if moment is not critical
+        col_tx_min, col_ty_min = st.columns(2)
+        with col_tx_min:
+            st.markdown("**Parallel to L (Long Span)**")
+            st.selectbox("Bar $\\phi$ ($\\parallel L$ Top Min)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(8), key="dia_t_x_min")
+            st.selectbox("Spacing $s$ (mm c/c) ($\\parallel L$ Top Min)", options=[100, 125, 150, 175, 200, 250, 300], index=3, key="s_t_x_min")
+        with col_ty_min:
+            st.markdown("**Parallel to B (Short Span)**")
+            st.selectbox("Bar $\\phi$ ($\\parallel B$ Top Min)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(8), key="dia_t_y_min")
+            st.selectbox("Spacing $s$ (mm c/c) ($\\parallel B$ Top Min)", options=[100, 125, 150, 175, 200, 250, 300], index=3, key="s_t_y_min")
+
+
+else:
+    st.info("Buoyancy/Uplift check is not relevant for Elevated tanks.")
+
 
 st.markdown("---")
 
