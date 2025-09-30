@@ -346,16 +346,16 @@ with col_in:
     s_v_in = st.selectbox("Spacing $s$ (mm c/c) Inner", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_v_in")
     Ast_prov_v_in = calc_Ast_prov(dia_v_in, s_v_in)
     pass_in = '✅ PASS' if Ast_prov_v_in >= Ast_req_V_inner else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_v_in:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_in}**")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_v_in:.0f} $\text{{mm}}^2/\text{{m}}$** $\\rightarrow$ **{pass_in}**")
 with col_out:
     st.markdown("##### Outer Face Selection")
     dia_v_out = st.selectbox("Bar $\phi$ (Vertical Outer)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_v_out")
     s_v_out = st.selectbox("Spacing $s$ (mm c/c) Outer", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_v_out")
     Ast_prov_v_out = calc_Ast_prov(dia_v_out, s_v_out)
     pass_out = '✅ PASS' if Ast_prov_v_out >= Ast_req_V_outer else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_v_out:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_out}**")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_v_out:.0f} $\text{{mm}}^2/\text{{m}}$** $\\rightarrow$ **{pass_out}**")
 
-st.markdown("#### Shear Check (Wall Base) $\rightarrow$ IS 456:2000 Cl 40")
+st.markdown("#### Shear Check (Wall Base) $\\rightarrow$ IS 456:2000 Cl 40")
 V_u = gamma_f * R_liq
 tau_v = V_u * 1000 / (1000 * d_eff) 
 # P_t is the percentage of tension steel (Ast_prov_v_in governs for max moment)
@@ -402,14 +402,14 @@ with col_h_in:
     s_h_in = st.selectbox("Spacing $s$ (mm c/c) Horiz. Inner", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_h_in")
     Ast_prov_h_in = calc_Ast_prov(dia_h_in, s_h_in)
     pass_h_in = '✅ PASS' if Ast_prov_h_in >= Ast_req_H_inner else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_h_in:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_h_in}**")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_h_in:.0f} $\text{{mm}}^2/\text{{m}}$** $\\rightarrow$ **{pass_h_in}**")
 with col_h_out:
     st.markdown("##### Outer Face Selection")
     dia_h_out = st.selectbox("Bar $\phi$ (Horiz. Outer)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_h_out")
     s_h_out = st.selectbox("Spacing $s$ (mm c/c) Horiz. Outer", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_h_out")
     Ast_prov_h_out = calc_Ast_prov(dia_h_out, s_h_out)
     pass_h_out = '✅ PASS' if Ast_prov_h_out >= Ast_req_H_outer else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_h_out:.0f} $\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_h_out}**")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_h_out:.0f} $\text{{mm}}^2/\text{{m}}$** $\\rightarrow$ **{pass_h_out}**")
 
 
 st.markdown("---")
@@ -479,7 +479,7 @@ Ast_req_parallel_B = max(demand_ast_from_M(Mu_base_y, d_eff_b, mat.fy, mat.fck),
 
 st.markdown(f"""
 - Design ULS Pressure $q_{{u}}$: **{q_design_uls:.1f} $\\text{{kN/m}}^2$** (Using $1.5 \\times$ Total Downward Pressure)
-- $L/B$ Ratio: **{L_ratio:.2f}** $\rightarrow$ Coeff. $\\alpha_{{x}}={alpha_x:.3f}, \\alpha_{{y}}={alpha_y:.3f}$
+- $L/B$ Ratio: **{L_ratio:.2f}** $\\rightarrow$ Coeff. $\\alpha_{{x}}={alpha_x:.3f}, \\alpha_{{y}}={alpha_y:.3f}$
 - **Moment $M_{{u, x}}$ (Moment along Short Span $B$):** **{Mu_base_x:.2f} kNm/m** (Calculated with $\\alpha_x$, resisted by steel $\\parallel$ to **Long Span $L$**).
 - **Moment $M_{{u, y}}$ (Moment along Long Span $L$):** **{Mu_base_y:.2f} kNm/m** (Calculated with $\\alpha_y$, resisted by steel $\\parallel$ to **Short Span $B$**).
 - $A_{{st, min}}$ (Base): **{Ast_min_base:.0f} $\\text{{mm}}^2/\text{{m}}$** (0.12% of total area)
@@ -496,14 +496,14 @@ with col_bx:
     s_b_x = st.selectbox("Spacing $s$ (mm c/c) ($\\|\\| L$)", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_b_x")
     Ast_prov_b_x = calc_Ast_prov(dia_b_x, s_b_x)
     pass_bx = '✅ PASS' if Ast_prov_b_x >= Ast_req_parallel_L else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_x:.0f} $\\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_bx}**")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_x:.0f} $\\text{{mm}}^2/\text{{m}}$** $\\rightarrow$ **{pass_bx}**")
 with col_by:
     st.markdown("**Bottom Mesh - Parallel to B (Short Span)**")
     dia_b_y = st.selectbox("Bar $\phi$ ($\\|\\| B$)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_b_y")
     s_b_y = st.selectbox("Spacing $s$ (mm c/c) ($\\|\\| B$)", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_b_y")
     Ast_prov_b_y = calc_Ast_prov(dia_b_y, s_b_y)
     pass_by = '✅ PASS' if Ast_prov_b_y >= Ast_req_parallel_B else '❌ FAIL'
-    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_y:.0f} $\\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_by}**")
+    st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_y:.0f} $\\text{{mm}}^2/\text{{m}}$** $\\rightarrow$ **{pass_by}**")
 
 st.markdown("---")
 
