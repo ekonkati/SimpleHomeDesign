@@ -1,7 +1,6 @@
 import math
 import json
 import base64
-from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
@@ -10,9 +9,9 @@ import streamlit as st
 import plotly.graph_objects as go
 
 # -----------------------------
-# 1. CONSTANTS, UTILITIES, and SECTION DATACLASS
+# 1. CONSTANTS, UTILITIES, and SECTION CLASS
 # -----------------------------
-ES = 200000.0
+ES = 200000.0  # MPa
 EPS_CU = 0.0035
 
 def bar_area(dia_mm: float) -> float:
@@ -39,13 +38,13 @@ def moment_magnifier(Pu: float, le_mm: float, fck: float, Ic: float, Cm: float =
     if not sway: delta = max(1.0, Cm * delta)
     return float(np.clip(delta, 1.0, 2.5))
 
-@dataclass
 class Section:
-    b: float  
-    D: float  
-    cover: float  
-    bars: List[Tuple[float, float, float]]
-    tie_dia: float = 8.0 
+    def __init__(self, b: float, D: float, cover: float, bars: List[Tuple[float, float, float]], tie_dia: float = 8.0):
+        self.b = b
+        self.D = D
+        self.cover = cover
+        self.bars = bars
+        self.tie_dia = tie_dia
 
     @property
     def Ag(self) -> float: return self.b * self.D
@@ -59,6 +58,7 @@ class Section:
     def ry(self) -> float: return math.sqrt(self.Ic_y / self.Ag)
     @property
     def As_long(self) -> float: return sum(bar_area(dia) for _, _, dia in self.bars)
+
 
 # -----------------------------
 # 2. CORE ENGINEERING LOGIC 
@@ -75,7 +75,6 @@ def _generate_bar_layout(b: float, D: float, cover: float, n_top: int, n_bot: in
     corner_dia = max(dia_top, dia_bot, dia_side)
     dx_corner = cover + corner_dia / 2.0
 
-    # Top and Bottom Rows
     if n_top > 0:
         x_coords = _linspace_points(dx_corner, b - dx_corner, n_top)
         for x in x_coords: bars_list.append((x, D - dx_corner, dia_top))
@@ -83,7 +82,6 @@ def _generate_bar_layout(b: float, D: float, cover: float, n_top: int, n_bot: in
         x_coords = _linspace_points(dx_corner, b - dx_corner, n_bot)
         for x in x_coords: bars_list.append((x, dx_corner, dia_bot))
             
-    # Left and Right Columns (Intermediate bars)
     y_start, y_end = dx_corner, D - dx_corner
     y_coords_l = _linspace_points(y_start, y_end, n_left)
     for y in y_coords_l: bars_list.append((dx_corner, y, dia_side))
@@ -169,6 +167,7 @@ def plotly_cross_section(section: Section) -> go.Figure:
 
 def plot_pm_curve_plotly(section: Section, fck: float, fy: float, Pu: float, Mu_eff: float, axis: str):
     dimension = section.D if axis == 'x' else section.b
+    
     def forces_and_moment_for_curve(c: float):
         Cc = 0.36 * fck * dimension * min(c, dimension)
         arm_Cc = 0.5 * dimension - 0.42 * min(c, dimension)
@@ -224,20 +223,7 @@ def initialize_state():
             "alpha": 1.0, "bars": [], "legs": 2
         }
 
-# ----------------------------
-# MAIN APP BODY (Flattened to minimize parser complexity)
-# ----------------------------
-
-st.set_page_config(page_title="RCC Column (Biaxial) Designer", layout="wide")
-st.title("🧱 RCC Column Design — Biaxial Moments ± Axial ± Shear (IS 456/13920)")
-st.markdown("---")
-
-# --- INITIALIZE AND CALCULATE CORE PROPERTIES ---
-initialize_state()
-state = st.session_state.state
-
-# Function to recalculate all properties
-def recalculate_properties():
+def recalculate_properties(state):
     # 1. Geometry and Bar Layout
     bars_temp = _generate_bar_layout(state["b"], state["D"], state["cover"], state["n_top"], state["n_bot"], state["n_left"], state["n_right"], state["dia_top"], state["dia_bot"], state["dia_side"])
     section = Section(b=state["b"], D=state["D"], cover=state["cover"], bars=bars_temp, tie_dia=state["tie_dia"])
@@ -275,137 +261,152 @@ def recalculate_properties():
     
     return section
 
-# --- 0. Data Management (Must be before inputs to update state) ---
-st.header("🗄️ Data Management (Import / Export)")
-c_up, c_down = st.columns(2)
-with c_up:
-    uploaded_file = st.file_uploader("Upload State (JSON)", type="json")
-    if uploaded_file is not None:
-        try:
-            data = json.load(uploaded_file)
-            if 'bars' in data and isinstance(data['bars'], list): data['bars'] = [tuple(item) for item in data['bars']]
-            st.session_state.state.update(data)
-            st.rerun() 
-        except Exception as e:
-            st.error(f"Error loading JSON: {e}")
-with c_down:
-    if state.get("bars"): 
-        st.markdown("**Export Current Design State**")
-        st.markdown(get_json_download_link(to_json_serializable(state), "column_design_state.json"), unsafe_allow_html=True)
-st.markdown("---")
+# ----------------------------
+# MAIN APP EXECUTION WRAPPER
+# ----------------------------
 
-# --- 1. Inputs (Geometry, Materials, Loads, Detailing) ---
-st.header("1️⃣ Design Inputs")
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    state["b"] = st.number_input("Width $b$ (mm)", 200.0, 2000.0, state["b"], 25.0, key='in_b')
-    state["D"] = st.number_input("Depth $D$ (mm)", 200.0, 3000.0, state["D"], 25.0, key='in_D')
-    state["cover"] = st.number_input("Clear Cover (mm)", 20.0, 75.0, state["cover"], 5.0, key='in_cover')
-with c2:
-    state["fck"] = st.number_input("$f_{ck}$ (MPa, M-Grade)", 20.0, 80.0, state["fck"], 1.0, key='in_fck')
-    state["fy"] = st.number_input("$f_{y}$ (MPa, Fe-Grade)", 415.0, 600.0, state["fy"], 5.0, key='in_fy')
-    state["Pu"] = st.number_input("Axial Load $P_u$ (kN, +comp)", -3000.0, 6000.0, state["Pu"] / 1e3, 10.0, key='in_Pu') * 1e3
-with c3:
-    state["Mux"] = st.number_input("Moment $M_{ux}$ (kNm)", -2000.0, 2000.0, state["Mux"] / 1e6, 5.0, key='in_Mux') * 1e6
-    state["Muy"] = st.number_input("Moment $M_{uy}$ (kNm)", -2000.0, 2000.0, state["Muy"] / 1e6, 5.0, key='in_Muy') * 1e6
-    state["Vu"] = st.number_input("Shear $V_u$ (kN)", 0.0, 5000.0, state["Vu"] / 1e3, 5.0, key='in_Vu') * 1e3
-with c4:
-    state["storey_clear"] = st.number_input("Clear Storey Height $l_0$ (mm)", 2000.0, 6000.0, state["storey_clear"], 50.0, key='in_l0')
-    restraint_options = ["Fixed-Fixed", "Fixed-Pinned", "Pinned-Pinned", "Fixed-Free (cantilever)"]
-    state["restraint"] = st.selectbox("End Restraint", restraint_options, index=restraint_options.index(state["restraint"]), key='in_restraint')
-    state["sway"] = st.checkbox("Sway Frame? (Yes/No)", value=state["sway"], key='in_sway')
-    k_factor = effective_length_factor(state["restraint"])
-    st.markdown(f"Effective Length Factor **$k$**: **{k_factor:.2f}**")
+def main():
+    st.set_page_config(page_title="RCC Column (Biaxial) Designer", layout="wide")
+    st.title("🧱 RCC Column Design — Biaxial Moments ± Axial ± Shear (IS 456/13920)")
+    st.markdown("---")
 
-# --- 2. Longitudinal Reinforcement Detailing ---
-st.header("2️⃣ Longitudinal Rebar Arrangement")
-cL1, cL2, cL3, cL4 = st.columns(4)
-bar_options = [12.0, 16.0, 20.0, 25.0, 28.0, 32.0]
-with cL1:
-    state["n_top"] = st.number_input("Top row bars ($n_{top}$)", 0, 10, state["n_top"], 1, key='in_ntop')
-    state["n_bot"] = st.number_input("Bottom row bars ($n_{bot}$)", 0, 10, state["n_bot"], 1, key='in_nbot')
-with cL2:
-    state["dia_top"] = st.selectbox("Top bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_top"]), key='in_dtop')
-    state["dia_bot"] = st.selectbox("Bottom bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_bot"]), key='in_dbot')
-with cL3:
-    state["n_left"] = st.number_input("Left column bars ($n_{left}$)", 0, 10, state["n_left"], 1, key='in_nleft')
-    state["n_right"] = st.number_input("Right column bars ($n_{right}$)", 0, 10, state["n_right"], 1, key='in_nright')
-with cL4:
-    state["dia_side"] = st.selectbox("Side bar $\\phi$ (mm)", bar_options[:-1], index=bar_options[:-1].index(state["dia_side"]), key='in_dside')
-    leg_options_map = {"2-legged": 2, "4-legged": 4, "6-legged": 6}
-    current_legs_str = f"{state.get('legs', 2)}-legged"
-    selected_legs_str = st.selectbox("Tie Legs ($A_{sv}$)", list(leg_options_map.keys()), index=list(leg_options_map.keys()).index(current_legs_str), key='in_legs')
-    state["legs"] = leg_options_map[selected_legs_str]
+    initialize_state()
+    state = st.session_state.state
 
-# --- RUN ALL CALCULATIONS ---
-section = recalculate_properties()
-st.markdown("---")
+    # --- 0. Data Management ---
+    st.header("🗄️ Data Management (Import / Export)")
+    c_up, c_down = st.columns(2)
+    with c_up:
+        uploaded_file = st.file_uploader("Upload State (JSON)", type="json")
+        if uploaded_file is not None:
+            try:
+                data = json.load(uploaded_file)
+                if 'bars' in data and isinstance(data['bars'], list): data['bars'] = [tuple(item) for item in data['bars']]
+                st.session_state.state.update(data)
+                st.rerun() 
+            except Exception as e:
+                st.error(f"Error loading JSON: {e}")
+    with c_down:
+        if state.get("bars"): 
+            st.markdown("**Export Current Design State**")
+            st.markdown(get_json_download_link(to_json_serializable(state), "column_design_state.json"), unsafe_allow_html=True)
+    st.markdown("---")
 
-# --- 3. Slenderness & Moment Check ---
-st.header("3️⃣ Slenderness, Magnification, and Cross-Section")
-c_check, c_plot = st.columns(2)
-with c_check:
-    st.metric(f"Slenderness $\lambda_x$", f"{state['lam_x']:.1f} ({'Short' if state['short_x'] else 'Slender'})")
-    st.metric(f"Slenderness $\lambda_y$", f"{state['lam_y']:.1f} ({'Short' if state['short_y'] else 'Slender'})")
-    st.metric("Magnified $M_{ux}'$ (kNm)", f"{kNm(state['Mux_eff'])}")
-    st.metric("Magnified $M_{uy}'$ (kNm)", f"{kNm(state['Muy_eff'])}")
-with c_plot:
-    st.plotly_chart(plotly_cross_section(section), use_container_width=True)
-st.markdown("---")
+    # --- 1. Inputs (Geometry, Materials, Loads, Detailing) ---
+    st.header("1️⃣ Design Inputs")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        state["b"] = st.number_input("Width $b$ (mm)", 200.0, 2000.0, state["b"], 25.0, key='in_b')
+        state["D"] = st.number_input("Depth $D$ (mm)", 200.0, 3000.0, state["D"], 25.0, key='in_D')
+        state["cover"] = st.number_input("Clear Cover (mm)", 20.0, 75.0, state["cover"], 5.0, key='in_cover')
+    with c2:
+        state["fck"] = st.number_input("$f_{ck}$ (MPa, M-Grade)", 20.0, 80.0, state["fck"], 1.0, key='in_fck')
+        state["fy"] = st.number_input("$f_{y}$ (MPa, Fe-Grade)", 415.0, 600.0, state["fy"], 5.0, key='in_fy')
+        state["Pu"] = st.number_input("Axial Load $P_u$ (kN, +comp)", -3000.0, 6000.0, state["Pu"] / 1e3, 10.0, key='in_Pu') * 1e3
+    with c3:
+        state["Mux"] = st.number_input("Moment $M_{ux}$ (kNm)", -2000.0, 2000.0, state["Mux"] / 1e6, 5.0, key='in_Mux') * 1e6
+        state["Muy"] = st.number_input("Moment $M_{uy}$ (kNm)", -2000.0, 2000.0, state["Muy"] / 1e6, 5.0, key='in_Muy') * 1e6
+        state["Vu"] = st.number_input("Shear $V_u$ (kN)", 0.0, 5000.0, state["Vu"] / 1e3, 5.0, key='in_Vu') * 1e3
+    with c4:
+        state["storey_clear"] = st.number_input("Clear Storey Height $l_0$ (mm)", 2000.0, 6000.0, state["storey_clear"], 50.0, key='in_l0')
+        restraint_options = ["Fixed-Fixed", "Fixed-Pinned", "Pinned-Pinned", "Fixed-Free (cantilever)"]
+        state["restraint"] = st.selectbox("End Restraint", restraint_options, index=restraint_options.index(state["restraint"]), key='in_restraint')
+        state["sway"] = st.checkbox("Sway Frame? (Yes/No)", value=state["sway"], key='in_sway')
+        k_factor = effective_length_factor(state["restraint"])
+        st.markdown(f"Effective Length Factor **$k$**: **{k_factor:.2f}**")
 
-# --- 4. Biaxial Interaction ---
-st.header("4️⃣ Biaxial Interaction Check (Strength)")
-state["alpha"] = st.slider("Interaction Exponent $\\alpha$", 0.8, 2.0, state["alpha"], 0.1, key='in_alpha_check')
-st.latex(r"\left(\frac{|M_{ux}'|}{M_{ux,lim}}\right)^{\alpha} + \left(\frac{|M_{uy}'|}{M_{uy,lim}}\right)^{\alpha} \le 1.0")
+    # --- 2. Longitudinal Reinforcement Detailing ---
+    st.header("2️⃣ Longitudinal Rebar Arrangement")
+    cL1, cL2, cL3, cL4 = st.columns(4)
+    bar_options = [12.0, 16.0, 20.0, 25.0, 28.0, 32.0]
+    with cL1:
+        state["n_top"] = st.number_input("Top row bars ($n_{top}$)", 0, 10, state["n_top"], 1, key='in_ntop')
+        state["n_bot"] = st.number_input("Bottom row bars ($n_{bot}$)", 0, 10, state["n_bot"], 1, key='in_nbot')
+    with cL2:
+        state["dia_top"] = st.selectbox("Top bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_top"]), key='in_dtop')
+        state["dia_bot"] = st.selectbox("Bottom bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_bot"]), key='in_dbot')
+    with cL3:
+        state["n_left"] = st.number_input("Left column bars ($n_{left}$)", 0, 10, state["n_left"], 1, key='in_nleft')
+        state["n_right"] = st.number_input("Right column bars ($n_{right}$)", 0, 10, state["n_right"], 1, key='in_nright')
+    with cL4:
+        state["dia_side"] = st.selectbox("Side bar $\\phi$ (mm)", bar_options[:-1], index=bar_options[:-1].index(state["dia_side"]), key='in_dside')
+        leg_options_map = {"2-legged": 2, "4-legged": 4, "6-legged": 6}
+        current_legs_str = f"{state.get('legs', 2)}-legged"
+        selected_legs_str = st.selectbox("Tie Legs ($A_{sv}$)", list(leg_options_map.keys()), index=list(leg_options_map.keys()).index(current_legs_str), key='in_legs')
+        state["legs"] = leg_options_map[selected_legs_str]
 
-c4_1, c4_2, c4_3 = st.columns(3)
-with c4_1: st.metric("Uniaxial $M_{ux,lim}$ (kNm)", f"{kNm(state['Mux_lim'])}")
-with c4_2: st.metric("Uniaxial $M_{uy,lim}$ (kNm)", f"{kNm(state['Muy_lim'])}")
-with c4_3: st.metric("Utilization (Σ ≤ 1)", f"**{state['util']:.2f}**")
-if state['util'] <= 1.0: st.success("✅ Biaxial interaction PASS.")
-else: st.error("❌ Biaxial interaction FAIL — **Increase steel area** in Section 2.")
+    # --- RUN ALL CALCULATIONS ---
+    section = recalculate_properties(state)
+    st.markdown("---")
 
-st.markdown("#### P–M Interaction Curves")
-colx, coly = st.columns(2)
-with colx: st.plotly_chart(plot_pm_curve_plotly(section, state["fck"], state["fy"], state["Pu"], state["Mux_eff"], 'x'), use_container_width=True)
-with coly: st.plotly_chart(plot_pm_curve_plotly(section, state["fck"], state["fy"], state["Pu"], state["Muy_eff"], 'y'), use_container_width=True)
-st.markdown("---")
+    # --- 3. Slenderness & Moment Check ---
+    st.header("3️⃣ Slenderness, Magnification, and Cross-Section")
+    c_check, c_plot = st.columns(2)
+    with c_check:
+        st.metric(f"Slenderness $\lambda_x$", f"{state['lam_x']:.1f} ({'Short' if state['short_x'] else 'Slender'})")
+        st.metric(f"Slenderness $\lambda_y$", f"{state['lam_y']:.1f} ({'Short' if state['short_y'] else 'Slender'})")
+        st.metric("Magnified $M_{ux}'$ (kNm)", f"{kNm(state['Mux_eff'])}")
+        st.metric("Magnified $M_{uy}'$ (kNm)", f"{kNm(state['Muy_eff'])}")
+    with c_plot:
+        st.plotly_chart(plotly_cross_section(section), use_container_width=True)
+    st.markdown("---")
 
-# --- 5. Shear and Tie Detailing ---
-st.header("5️⃣ Shear and Tie Design")
-c5_1, c5_2, c5_3 = st.columns(3)
-tie_options = [6.0, 8.0, 10.0, 12.0]
-with c5_1:
-    st.metric("Concrete Capacity $V_c$ (kN)", f"{kN(state['Vc'])}")
-    state["tie_dia"] = st.selectbox("Tie $\\phi$ (mm)", tie_options, index=tie_options.index(state["tie_dia"]), key='in_tdia_shear')
-with c5_2:
-    st.metric("Excess Shear $V_{us}$ (kN)", f"{kN(state['Vus'])}")
-    state["tie_spacing"] = st.number_input("Tie Spacing $s$ (mm) Provided", 50.0, 300.0, state["tie_spacing"], 5.0, key='in_ts_prov')
-with c5_3:
-    st.metric("Governing Req $s$ (mm)", f"{state['s_governing_tie']:.0f}")
-    if state["tie_spacing"] <= state["s_governing_tie"]: st.success(f"Tie Spacing PASS: {state['tie_spacing']:.0f} mm $\\le$ {state['s_governing_tie']:.0f} mm.")
-    else: st.error(f"Tie Spacing FAIL: $\\le$ **{state['s_governing_tie']:.0f} mm**.")
-st.markdown("---")
+    # --- 4. Biaxial Interaction ---
+    st.header("4️⃣ Biaxial Interaction Check (Strength)")
+    state["alpha"] = st.slider("Interaction Exponent $\\alpha$", 0.8, 2.0, state["alpha"], 0.1, key='in_alpha_check')
+    st.latex(r"\left(\frac{|M_{ux}'|}{M_{ux,lim}}\right)^{\alpha} + \left(\frac{|M_{uy}'|}{M_{uy,lim}}\right)^{\alpha} \le 1.0")
 
-# --- 6. Output Summary ---
-st.header("6️⃣ Printable Output Summary")
-As_long = state['As_long']
-As_min = 0.008 * section.Ag
-As_governing = max(As_min, As_long * (state.get("util", 1.0) ** (1/state.get("alpha", 1.0))))
+    c4_1, c4_2, c4_3 = st.columns(3)
+    with c4_1: st.metric("Uniaxial $M_{ux,lim}$ (kNm)", f"{kNm(state['Mux_lim'])}")
+    with c4_2: st.metric("Uniaxial $M_{uy,lim}$ (kNm)", f"{kNm(state['Muy_lim'])}")
+    with c4_3: st.metric("Utilization (Σ ≤ 1)", f"**{state['util']:.2f}**")
+    if state['util'] <= 1.0: st.success("✅ Biaxial interaction PASS.")
+    else: st.error("❌ Biaxial interaction FAIL — **Increase steel area** in Section 2.")
 
-out = {
-    "b (mm)": state["b"], "D (mm)": state["D"], "fck (MPa)": state["fck"], "fy (MPa)": state["fy"],
-    "Pu (kN)": state["Pu"] / 1e3, "Mux′ (kNm)": kNm(state["Mux_eff"]), "Muy′ (kNm)": kNm(state["Muy_eff"]), "Vu (kN)": state["Vu"] / 1e3,
-    "Slenderness λx": f"{state['lam_x']:.1f}", "Magnifier δx": f"{state['delta_x']:.2f}", 
-    "Uniaxial Capacity Mux,lim (kNm)": kNm(state["Mux_lim"]),
-    "Biaxial Utilization (≤1)": f"{state['util']:.2f}",
-    "Ast Provided (mm²)": f"{As_long:.0f}",
-    "Ast Governing Required (mm²)": f"{As_governing:.0f}",
-    "Tie Spacing Provided (mm)": f"{state['tie_spacing']:.0f}",
-    "Tie Spacing Governing Req (mm)": f"{state['s_governing_tie']:.0f}",
-}
+    st.markdown("#### P–M Interaction Curves")
+    colx, coly = st.columns(2)
+    with colx: st.plotly_chart(plot_pm_curve_plotly(section, state["fck"], state["fy"], state["Pu"], state["Mux_eff"], 'x'), use_container_width=True)
+    with coly: st.plotly_chart(plot_pm_curve_plotly(section, state["fck"], state["fy"], state["Pu"], state["Muy_eff"], 'y'), use_container_width=True)
+    st.markdown("---")
 
-df_out = pd.DataFrame({"Parameter": list(out.keys()), "Value": list(out.values())})
-st.dataframe(df_out, use_container_width=True)
+    # --- 5. Shear and Tie Detailing ---
+    st.header("5️⃣ Shear and Tie Design")
+    c5_1, c5_2, c5_3 = st.columns(3)
+    tie_options = [6.0, 8.0, 10.0, 12.0]
+    with c5_1:
+        st.metric("Concrete Capacity $V_c$ (kN)", f"{kN(state['Vc'])}")
+        state["tie_dia"] = st.selectbox("Tie $\\phi$ (mm)", tie_options, index=tie_options.index(state["tie_dia"]), key='in_tdia_shear')
+    with c5_2:
+        st.metric("Excess Shear $V_{us}$ (kN)", f"{kN(state['Vus'])}")
+        state["tie_spacing"] = st.number_input("Tie Spacing $s$ (mm) Provided", 50.0, 300.0, state["tie_spacing"], 5.0, key='in_ts_prov')
+    with c5_3:
+        st.metric("Governing Req $s$ (mm)", f"{state['s_governing_tie']:.0f}")
+        if state["tie_spacing"] <= state["s_governing_tie"]: st.success(f"Tie Spacing PASS: {state['tie_spacing']:.0f} mm $\\le$ {state['s_governing_tie']:.0f} mm.")
+        else: st.error(f"Tie Spacing FAIL: $\\le$ **{state['s_governing_tie']:.0f} mm**.")
+    st.markdown("---")
 
-st.caption("Notes: All calculations follow IS 456 (2000) and IS 13920 (2016) principles.")
+    # --- 6. Output Summary ---
+    st.header("6️⃣ Printable Output Summary")
+    As_long = state['As_long']
+    As_min = 0.008 * section.Ag
+    As_governing = max(As_min, As_long * (state.get("util", 1.0) ** (1/state.get("alpha", 1.0))))
+
+    out = {
+        "b (mm)": state["b"], "D (mm)": state["D"], "fck (MPa)": state["fck"], "fy (MPa)": state["fy"],
+        "Pu (kN)": state["Pu"] / 1e3, "Mux′ (kNm)": kNm(state["Mux_eff"]), "Muy′ (kNm)": kNm(state["Muy_eff"]), "Vu (kN)": state["Vu"] / 1e3,
+        "Slenderness λx": f"{state['lam_x']:.1f}", "Magnifier δx": f"{state['delta_x']:.2f}", 
+        "Uniaxial Capacity Mux,lim (kNm)": kNm(state["Mux_lim"]),
+        "Biaxial Utilization (≤1)": f"{state['util']:.2f}",
+        "Ast Provided (mm²)": f"{As_long:.0f}",
+        "Ast Governing Required (mm²)": f"{As_governing:.0f}",
+        "Tie Spacing Provided (mm)": f"{state['tie_spacing']:.0f}",
+        "Tie Spacing Governing Req (mm)": f"{state['s_governing_tie']:.0f}",
+    }
+
+    df_out = pd.DataFrame({"Parameter": list(out.keys()), "Value": list(out.values())})
+    st.dataframe(df_out, use_container_width=True)
+
+    st.caption("Notes: All calculations follow IS 456 (2000) and IS 13920 (2016) principles.")
+
+if __name__ == "__main__":
+    main()
