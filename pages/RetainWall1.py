@@ -335,15 +335,16 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
     gamma_f_LL = 1.5
     gamma_m = 1.5
     
-    # M_limit (for check against failure)
-    fck = mat.fck
-    fy = mat.fy
-    M_limit = 0.138 * fck * 1000 * (mat.H_wall * 1000)**2 # Assuming x_u,max / d = 0.48 for Fe 415
+    # M_limit (for check against failure) - THIS LINE IS REMOVED/COMMENTED OUT
+    # fck = mat.fck
+    # fy = mat.fy
+    # M_limit = 0.138 * fck * 1000 * (mat.H_wall * 1000)**2 # <-- REMOVE THIS LINE
     
     # --- STEM DESIGN (Factored Earth + Surcharge + Water Moments) ---
     
     # Stem depth (d) = t_stem - cover - bar_dia/2 (simplified to -cover)
     d_stem = geo.t_stem * 1000 - mat.cover - 12 # Assume 12mm bar for initial calc (mm)
+    
     
     # Moments at Base of Stem (Critical Section)
     P_earth_u = pres['P_earth'] * gamma_f_DL
