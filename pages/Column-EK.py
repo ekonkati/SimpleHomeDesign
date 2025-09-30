@@ -15,7 +15,6 @@ import plotly.express as px
 # -----------------------------
 ES = 200000.0  # MPa (N/mm2)
 EPS_CU = 0.0035  # Ultimate concrete compressive strain
-FY_DEFAULT = 500.0  # MPa 
 
 def Ec_from_fck(fck: float) -> float:
     """IS 456: Ec = 5000 * sqrt(fck) (MPa)."""
@@ -85,10 +84,8 @@ class Section:
 def generate_rectangular_bar_layout(b: float, D: float, cover: float, 
                                     n_top: int, n_bot: int, n_left: int, n_right: int, 
                                     dia_top: float, dia_bot: float, dia_side: float) -> List[Tuple[float, float, float]]:
-    """Generates bar list (x, y, dia) for a rectangular tied column. Origin at (0, 0).
-    
-    CRITICAL FIX: Corrected logic for generating side bar positions to properly
-    handle corner bars and intermediate bars, avoiding duplicates/gaps.
+    """Generates bar list (x, y, dia) for a rectangular tied column. Origin at (0, 0, bottom-left).
+    Simplified logic to avoid complex conditional branching.
     """
     bars = []
     
@@ -96,64 +93,47 @@ def generate_rectangular_bar_layout(b: float, D: float, cover: float,
         if n <= 1: return [a + (c - a) / 2.0]
         return [a + i * (c - a) / (n - 1) for i in range(n)]
 
-    # Use max diameter for cover distance calculation to be safe, or side dia for side bars
-    d_max_top_bot = max(dia_top, dia_bot)
-    d_x = cover + dia_side / 2.0
-    d_y_top = cover + dia_top / 2.0
-    d_y_bot = D - (cover + dia_bot / 2.0)
+    # Distances from edge to bar centerline
+    dx_bar = cover + dia_side / 2.0
+    dy_bar_top = D - (cover + dia_top / 2.0) # Measured from (0,0) bottom-left
+    dy_bar_bot = cover + dia_bot / 2.0      # Measured from (0,0) bottom-left
     
-    # 1. Top and Bottom Rows (spanning between side bar positions)
-    x_lim_l = cover + dia_side / 2.0
-    x_lim_r = b - (cover + dia_side / 2.0)
-    
-    x_span_tb = linspace(x_lim_l, x_lim_r, max(n_top, n_bot, 1))
-
-    # Top row
+    # 1. Top Row
     if n_top > 0:
-        for x in x_span_tb[:n_top]:
-            bars.append((x, d_y_top, dia_top))
+        x_span = linspace(dx_bar, b - dx_bar, n_top)
+        for x in x_span:
+            bars.append((x, dy_bar_top, dia_top))
 
-    # Bottom row
+    # 2. Bottom Row
     if n_bot > 0:
-        for x in x_span_tb[:n_bot]:
-            bars.append((x, d_y_bot, dia_bot))
+        x_span = linspace(dx_bar, b - dx_bar, n_bot)
+        for x in x_span:
+            bars.append((x, dy_bar_bot, dia_bot))
 
-    # 2. Left and Right Sides (spanning between top/bottom bar positions)
-    y_span_lr = linspace(d_y_top, d_y_bot, max(n_left, n_right, 1))
-    
-    x_left = x_lim_l
-    x_right = x_lim_r
-    
-    # Intermediate y-points (excluding the endpoints which are corners already handled)
-    y_intermediate = []
-    if len(y_span_lr) > 2:
-        y_intermediate = y_span_lr[1:-1] 
+    # 3. Left & Right Columns (must align with corners and use side bar properties)
+    n_y_span = max(n_left, n_right, 1)
+    y_span = linspace(dy_bar_bot, dy_bar_top, n_y_span) # span from bottom to top
 
+    # Left Column
     if n_left > 0:
-        # Corner bars on left side (already added by top/bot loops)
-        if (n_top > 0 and n_bot > 0): # Add intermediate bars only if corner bars were added
-            for y in y_intermediate[:n_left - 2]:
-                bars.append((x_left, y, dia_side))
-        
-        # Special case for 1 bar on side (center bar)
-        elif n_left == 1 and n_top == 0 and n_bot == 0:
-             bars.append((x_left, D/2, dia_side))
+        for i in range(n_left):
+            bars.append((dx_bar, y_span[i], dia_side))
 
-
+    # Right Column
     if n_right > 0:
-        if (n_top > 0 and n_bot > 0): 
-            for y in y_intermediate[:n_right - 2]:
-                bars.append((x_right, y, dia_side))
-        elif n_right == 1 and n_top == 0 and n_bot == 0:
-             bars.append((x_right, D/2, dia_side))
+        for i in range(n_right):
+            bars.append((b - dx_bar, y_span[i], dia_side))
 
-    # 3. Final cleanup for unique bars 
+    # Final cleanup for unique bars (essential step for corner bars)
     unique_bars = []
     for x, y, dia in bars:
         is_unique = True
-        for ux, uy, udia in unique_bars:
+        for i, (ux, uy, udia) in enumerate(unique_bars):
             # Check for near-duplicate position
             if abs(x - ux) < 1e-3 and abs(y - uy) < 1e-3:
+                # If a duplicate is found (e.g., at a corner), use the larger bar
+                if dia > udia:
+                    unique_bars[i] = (x, y, dia) 
                 is_unique = False
                 break
         if is_unique:
@@ -161,27 +141,28 @@ def generate_rectangular_bar_layout(b: float, D: float, cover: float,
             
     return unique_bars
 
-
 def uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: float, axis: str) -> float:
     """
-    Compute ultimate uniaxial moment capacity Mu,lim for a given factored axial Pu (N) and bending axis 
-    using binary search on the neutral axis depth 'c' to satisfy Pu.
+    Computes ultimate uniaxial moment capacity Mu,lim for a given factored axial Pu (N).
+    Bending about x means compression face is on top (y=D). Bending about y means compression face is on left (x=0).
     """
     dimension = section.D if axis == 'x' else section.b
     
     def forces_and_moment(c: float):
-        # Concrete block contribution
+        # Concrete block contribution (0.36 fck b x_u * (D/2 - 0.42 x_u))
         Cc = 0.36 * fck * dimension * min(c, dimension)
         arm_Cc = 0.5 * dimension - 0.42 * min(c, dimension)
         Mc = Cc * arm_Cc
         
-        # Steel bars (y-coordinates are referenced from the compression face)
-        Fs = 0.0
-        Ms = 0.0
+        Fs, Ms = 0.0, 0.0
+        
         for (x_abs, y_abs, dia) in section.bars:
             As = bar_area(dia)
-            # y is distance from compression face (0 if bending about x, D if bending about y)
-            y = y_abs if axis == 'y' else dimension - y_abs 
+            # y is distance from compression face 
+            if axis == 'x': # Bending about x-axis (D is depth), Compression face at y=D
+                y = section.D - y_abs
+            else: # Bending about y-axis (b is depth), Compression face at x=0
+                y = x_abs 
             
             strain = EPS_CU * (1.0 - (y / max(c, 1e-6)))
             stress = np.clip(ES * strain, -0.87 * fy, 0.87 * fy)
@@ -196,21 +177,19 @@ def uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: flo
         M_res = Mc + Ms  # about centroidal axis
         return N_res, M_res
 
-    # Binary search on c to match Pu
+    # Binary search on c to match Pu (Pu must be positive/compression for search to work well)
+    target = Pu
     c_min = 0.05 * dimension
     c_max = 1.50 * dimension
 
-    target = Pu
     cL, cR = c_min, c_max
     NL, ML = forces_and_moment(cL)
     NR, MR = forces_and_moment(cR)
 
-    # Clamping for extreme cases
-    if (NL - target) * (NR - target) > 0:
-        candidates = [(abs(NL - target), ML), (abs(NR - target), MR)]
-        return min(candidates, key=lambda t: t[0])[1]
+    # Simplified checks for out-of-bounds Pu
+    if target <= NL: return ML
+    if target >= NR: return MR
 
-    # Binary search loop
     for _ in range(60):
         cm = 0.5 * (cL + cR)
         Nm, Mm = forces_and_moment(cm)
@@ -222,7 +201,6 @@ def uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: flo
             cL, NL, ML = cm, Nm, Mm
     
     return float(0.5 * (ML + MR))
-
 
 def pm_curve(section: Section, fck: float, fy: float, axis: str, n: int = 80):
     """Generate (P, M) points by sweeping neutral axis depth c."""
@@ -236,7 +214,10 @@ def pm_curve(section: Section, fck: float, fy: float, axis: str, n: int = 80):
         
         for (x_abs, y_abs, dia) in section.bars:
             As = bar_area(dia)
-            y = y_abs if axis == 'y' else dimension - y_abs
+            if axis == 'x': 
+                y = section.D - y_abs
+            else: 
+                y = x_abs 
             
             strain = EPS_CU * (1.0 - (y / max(c, 1e-6)))
             stress = np.clip(ES * strain, -0.87 * fy, 0.87 * fy)
@@ -250,7 +231,6 @@ def pm_curve(section: Section, fck: float, fy: float, axis: str, n: int = 80):
         M = Mc + Ms
         return N, M
 
-    # Sweep c from 0.01D (tension failure) to 1.5D (compression failure)
     cmin = 0.01 * dimension
     cmax = 1.50 * dimension
     cs = np.linspace(cmin, cmax, n)
@@ -272,8 +252,13 @@ def moment_magnifier(Pu: float, le_mm: float, Ec: float, Ic: float, Cm: float = 
 def biaxial_utilization(section: Section, fck: float, fy: float, Pu: float, Mux_eff: float, Muy_eff: float, alpha: float) -> Tuple[float, float, float]:
     Mux_lim = uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='x')
     Muy_lim = uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='y')
-    Rx = (abs(Mux_eff) / max(Mux_lim, 1e-9)) ** alpha
-    Ry = (abs(Muy_eff) / max(Muy_lim, 1e-9)) ** alpha
+    
+    # Handle Mux_lim or Muy_lim being zero for extreme tension cases (approximate for utilization)
+    if Mux_lim < 1e-3 and abs(Mux_eff) > 1e-3: Mux_lim = 1e-3
+    if Muy_lim < 1e-3 and abs(Muy_eff) > 1e-3: Muy_lim = 1e-3
+        
+    Rx = (abs(Mux_eff) / Mux_lim) ** alpha
+    Ry = (abs(Muy_eff) / Muy_lim) ** alpha
     util = Rx + Ry
     return util, Mux_lim, Muy_lim
 
@@ -298,7 +283,7 @@ def plotly_cross_section(section: Section) -> go.Figure:
     bar_x, bar_y, bar_size, bar_text = [], [], [], []
     for x_geom, y_geom, dia in section.bars:
         bar_x.append(x_geom)
-        bar_y.append(D - y_geom) # Flip y-axis (0,0 is now bottom-left)
+        bar_y.append(y_geom) 
         bar_size.append(dia * 2) 
         bar_text.append(f"Ø{dia:.0f} mm ({bar_area(dia):.0f} mm²)")
 
@@ -557,11 +542,9 @@ st.markdown("---")
 # -----------------------------
 # 6. Detailing and Final Check (Rebar Adjustment) -> PERFORMED HERE FIRST FOR ITERATION
 # -----------------------------
-# NOTE: Section 4 and 5 calculations rely on the *current* bar configuration defined here.
-
 with st.container():
     st.header("6️⃣ Longitudinal Rebar Adjustment & Detailing Checks")
-    st.markdown("Adjust the bar layout here. The resulting capacity is checked in **Section 4**.")
+    st.markdown("Adjust the bar layout here to meet the required capacity from **Section 4**. The change instantly triggers analysis re-runs.")
     
     # --- Longitudinal Bar Layout (Moved from Section 1) ---
     st.markdown("### Longitudinal Bar Layout")
@@ -595,7 +578,7 @@ with st.container():
     section = Section(b=state["b"], D=state["D"], cover=state["cover"], bars=state["bars"], tie_dia=state["tie_dia"])
     state["As_long"] = section.As_long
 
-    st.markdown("### Cross-Section Visualization")
+    st.markdown("### Cross-Section and Elevation Visualization")
     c_plot_cs, c_plot_elev = st.columns(2)
     with c_plot_cs:
         st.plotly_chart(plotly_cross_section(section), use_container_width=True)
@@ -626,10 +609,10 @@ st.markdown("---")
 # 4. Interaction (Biaxial)
 # -----------------------------
 st.header("4️⃣ Biaxial Interaction and Capacity Check (Strength)")
-st.markdown("The uniaxial moment capacity $M_{u,lim}$ is determined using the **Strain Compatibility Solver** for the given axial load $P_u$. The biaxial check uses Bresler's formula.")
+st.markdown("The uniaxial moment capacity $M_{u,lim}$ is determined using the **Strain Compatibility Solver** for the given axial load $P_u$.")
 
 # Contextual Input: Interaction Exponent
-st.markdown("### Bresler's Interaction")
+st.markdown("### Bresler's Interaction Formula (IS 456)")
 state["alpha"] = st.slider("Interaction Exponent $\\alpha$ (IS 456 suggests 1.0-2.0)", 0.8, 2.0, state["alpha"], 0.1, key='in_alpha_check')
 st.latex(r"\left(\frac{|M_{ux}'|}{M_{ux,lim}}\right)^{\alpha} + \left(\frac{|M_{uy}'|}{M_{uy,lim}}\right)^{\alpha} \le 1.0")
 
@@ -676,8 +659,8 @@ with st.container():
     phiN_calc = 1.0 + (state["Pu"] / max(1.0, (0.25 * state["fck"] * Ag)))
     phiN = float(np.clip(phiN_calc, 0.5, 1.5))
     
-    # Assuming tau_c for minimum steel; for full design, tau_c depends on p_t
-    tau_c = 0.62 * math.sqrt(state["fck"]) / 1.0 # simplified minimum value for tau_c 
+    # Using simplified minimum tau_c for safety
+    tau_c = 0.62 * math.sqrt(state["fck"]) / 1.0 
     Vc = tau_c * state["b"] * d_eff * phiN
     st.latex(r"V_c = \tau_c' \cdot b \cdot d_{eff} = " + f"{kN(Vc)} \text{ kN} \quad (\tau_c' = \phi_N \tau_c)")
     
@@ -707,10 +690,10 @@ with st.container():
     s_governing_tie = min(s_cap, state["s_required"])
     state["s_governing_tie"] = s_governing_tie
     
-    st.markdown("### Transverse Reinforcement Spacing Check")
+    st.markdown("### Transverse Reinforcement Spacing Check (IS 456 & Shear)")
     st.latex(r"s_{max} \le \min(16 \phi_{long}, \text{Least Dimension}, 300 \text{ mm}, s_{req, V})")
     
-    st.write(f"Tie Spacing Max (IS 456) $\\le$ **{s_cap:.0f} mm**.")
+    st.write(f"Tie Spacing Max (IS 456 Detailing) $\\le$ **{s_cap:.0f} mm**.")
     st.write(f"Required for Shear $s_{{req,V}}$ = **{state['s_required']:.0f} mm**.")
     
     if state["tie_spacing"] <= s_governing_tie:
@@ -748,4 +731,4 @@ with st.container():
     df_out = pd.DataFrame({"Parameter": list(out.keys()), "Value": list(out.values())})
     st.dataframe(df_out, use_container_width=True)
     
-    st.caption("Notes: Uniaxial capacities are computed via full strain compatibility. All calculations follow IS 456 (2000) and IS 13920 (2016) principles for design actions and detailing.")
+    st.caption("Notes: Uniaxial capacities are computed via full strain compatibility. All calculations follow IS 456 (2000) and IS 13920 (2016) principles.")
