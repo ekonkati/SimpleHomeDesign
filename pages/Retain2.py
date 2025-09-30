@@ -261,17 +261,12 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
             q_max = 2 * V_total / (3 * a)
             q_min = 0.0
             
-    # Swap q_max/q_min if e is negative (max pressure is at heel, which is B)
-    # The current calculation logic ensures q_max is the larger magnitude, regardless of location
-    # but for consistent display in the narrative, we confirm the location based on e.
-    
-    
     return {
         'H': P_H, 'V': V_total, 'M_o': Mo, 'M_r': Mr, 
         'FOS_OT': FOS_OT, 'FOS_SL': FOS_SL, 
         'Pp_allow': Pp_allow, 'F_friction': F_friction, 'F_cohesion': F_cohesion,
         'e': e, 'x_res': x_res, 'q_avg': V_total / geo.B, 'q_max': q_max, 'q_min': q_min,
-        'SBC_allow': bearing.SBC_allow # Include SBC for use in plotting/narrative
+        'SBC_allow': bearing.SBC_allow 
     }
 
 def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float], mat: Materials) -> Dict[str, float]:
@@ -406,22 +401,18 @@ def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bea
     SBC_allow = bearing.SBC_allow
     base_y = 0 
     
-    # Scale pressure (e.g., 1 m of plot depth represents 2 * SBC_allow kPa)
     pressure_scale = 1.0 / (SBC_allow * 2) 
     
-    # Draw SBC_allow line (limit)
     ax.plot([0, B], [base_y - SBC_allow * pressure_scale, base_y - SBC_allow * pressure_scale], 
             'k:', linewidth=1) 
     ax.text(B + 0.1, base_y - SBC_allow * pressure_scale, f'SBC={SBC_allow:.0f} kPa', va='center', ha='left', color='k')
     
-    # Draw Actual Pressure Polygon
     if q_max < 9999.0:
         
         y_max = base_y - q_max * pressure_scale
         y_min = base_y - q_min * pressure_scale
 
         if abs(stab['e']) <= B / 6:
-            # Trapezoidal Pressure
             X_press = [0, B, B, 0]
             Y_press = [y_max, y_min, base_y, base_y]
             ax.fill(X_press, Y_press, 'red', alpha=0.3, label='Actual Pressure')
@@ -431,10 +422,9 @@ def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bea
             ax.text(B, y_min, f'{q_min:.1f}', va='top', ha='center', color='r')
 
         else:
-            # Triangular Pressure (Partial Contact)
             e = stab['e']
             
-            if e >= 0: # Max pressure at Toe (x=0)
+            if e >= 0: 
                 L_contact = 3 * (geo.B / 2 - e)
                 X_press = [0, L_contact, 0]
                 Y_press = [y_max, base_y, base_y]
@@ -442,8 +432,8 @@ def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bea
                 ax.plot([0, L_contact], [y_max, base_y], 'r-', linewidth=2)
                 ax.text(0, y_max, f'{q_max:.1f} kPa', va='top', ha='center', color='r')
 
-            else: # Max pressure at Heel (x=B)
-                L_contact = 3 * (geo.B / 2 + e) # e is negative here
+            else: 
+                L_contact = 3 * (geo.B / 2 + e) 
                 start_x = B - L_contact
                 X_press = [start_x, B, B]
                 Y_press = [base_y, y_max, base_y]
@@ -454,7 +444,7 @@ def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bea
     # ------------------ Plot Settings ------------------
     ax.set_aspect('equal', 'box') 
     ax.set_xlim(-0.3, B + 0.3)
-    ax.set_ylim(min(-0.1, base_y - SBC_allow * pressure_scale * 1.5 - 0.2), H_wall + 0.3) # Adjust y-limit
+    ax.set_ylim(min(-0.1, base_y - SBC_allow * pressure_scale * 1.5 - 0.2), H_wall + 0.3) 
     
     ax.set_title('Wall Section, Bar Schematic, and Base Pressure (kPa)') 
     ax.set_xlabel('Length (m)')
@@ -466,7 +456,7 @@ def plot_pressure_diagram(H: float, p_earth: float, p_surcharge: float, p_water:
     """Plots the lateral pressure diagram with correct inversion (Depth increases down)."""
     fig, ax = plt.subplots(figsize=(6, 8))
     
-    Y = np.array([0, H]) # Depth from top of stem
+    Y = np.array([0, H]) 
     
     # Earth pressure
     ax.plot([0, p_earth], Y, 'k-')
@@ -480,7 +470,7 @@ def plot_pressure_diagram(H: float, p_earth: float, p_surcharge: float, p_water:
     
     # Water pressure
     if p_water > 0:
-        H_w_top = H - gwl_h_from_base # Depth where water pressure starts
+        H_w_top = H - gwl_h_from_base 
         Y_w = np.array([H_w_top, H])
         ax.plot([0, p_water], Y_w, 'c-')
         ax.fill_betweenx(Y_w, [0, p_water], color='cyan', alpha=0.3, label='Water')
@@ -489,12 +479,28 @@ def plot_pressure_diagram(H: float, p_earth: float, p_surcharge: float, p_water:
     ax.set_title('Lateral Pressure Distribution')
     ax.set_xlabel('Pressure (kPa)')
     ax.set_ylabel('Depth from Top of Stem (m)')
-    ax.invert_yaxis() # Depth increases downwards
+    ax.invert_yaxis() 
     ax.grid(True, linestyle=':', alpha=0.6)
     ax.legend(loc='lower right')
     st.pyplot(fig)
 
-# ... (rest of the helper functions remain the same) ...
+def plot_load_resultants(P_earth, P_surcharge, P_water):
+    """Plots a simple bar chart of resultant forces."""
+    forces = {
+        'P_earth': P_earth,
+        'P_surcharge': P_surcharge,
+        'P_water': P_water
+    }
+    fig, ax = plt.subplots(figsize=(6, 4))
+    names = list(forces.keys())
+    values = list(forces.values())
+    ax.barh(names, values, color=['yellow', 'blue', 'cyan'])
+    ax.set_title('Resultant Lateral Forces (kN/m)')
+    ax.set_xlabel('Force (kN/m)')
+    ax.grid(axis='x', linestyle=':', alpha=0.6)
+    for i, v in enumerate(values):
+        ax.text(v + 0.5, i, f'{v:.2f}', va='center')
+    st.pyplot(fig)
 
 def make_boq(geo: Geometry, mat: Materials, provided_steel: Dict[str, float]) -> pd.DataFrame:
     """Calculates Bill of Quantities (per meter length)."""
@@ -618,7 +624,6 @@ with st.expander('4.1 Geometry and Pressure Diagrams', expanded=True):
         plot_wall_section(geo, mat, stab, bearing) 
     with col_press:
         st.subheader('Lateral Pressure Distribution')
-        # Correctly passing GWL height
         plot_pressure_diagram(geo.H, pres['p0_earth'], pres['p_surcharge'], pres['p0_water'], loads.gwl_h_from_base)
         st.subheader('Resultant Forces')
         plot_load_resultants(pres['P_earth'], pres['P_surcharge'], pres['P_water'])
@@ -630,27 +635,30 @@ with st.expander('4.2 Stability Checks (SLS) - Narrative & Results', expanded=Tr
     
     st.markdown("### Detailed Stability Calculation Narrative")
     
+    # Pre-calculate required values for simpler F-strings
+    F_r_val = stab['FOS_SL'] * stab['H']
+    
     # 1. Overturning Check
     st.markdown("#### 1. Overturning Check")
     st.markdown(f"**Lateral Forces (H):** $P_H = P_{earth} + P_{surcharge} + P_{water} + P_{seismic} = {pres['P_earth']:.2f} + {pres['P_surcharge']:.2f} + {pres['P_water']:.2f} + {pres['P_seismic']:.2f} = {stab['H']:.2f} \\text{ kN/m}$")
     st.markdown(f"**Vertical Forces (V):** $V = \\sum W_i - W_{uplift} = {stab['V']:.2f} \\text{ kN/m}$")
     st.markdown(f"**Overturning Moment ($M_o$):** $M_o = \\sum (P_i \\cdot y_i) = {stab['M_o']:.2f} \\text{ kNm/m}$")
     st.markdown(f"**Resisting Moment ($M_r$):** $M_r = \\sum (W_i \\cdot x_i) = {stab['M_r']:.2f} \\text{ kNm/m}$")
-    st.markdown(f"**FOS Overturning:** $\\text{FOS}_{OT} = M_r / M_o = {stab['M_r']:.2f} / {stab['M_o']:.2f} = \\mathbf{{{stab['FOS_OT']:.2f}}}$ (Required $\\ge 2.0$)")
+    st.markdown(f"**FOS Overturning:** $\\text{FOS}_{OT} = M_r / M_o = {stab['M_r']:.2f} / {stab['M_o']:.2f} = **{stab['FOS_OT']:.2f}**$ (Required $\\ge 2.0$)")
 
     # 2. Sliding Check
     st.markdown("#### 2. Sliding Check")
     st.markdown(f"**Friction Resistance ($F_{friction}$):** $F_{friction} = V \\cdot \\mu = {stab['V']:.2f} \\cdot {bearing.mu_base:.2f} = {stab['F_friction']:.2f} \\text{ kN/m}$")
     st.markdown(f"**Cohesion Resistance ($F_{cohesion}$):** $F_{cohesion} = c_{base} \\cdot B = {soil.c_base:.2f} \\cdot {geo.B:.2f} = {stab['F_cohesion']:.2f} \\text{ kN/m}$")
     st.markdown(f"**Passive Resistance ($P_p$):** $P_p \\text{ (Allowed)} = {stab['Pp_allow']:.2f} \\text{ kN/m}$ ({bearing.passive_reduction:.2f} reduction applied)")
-    st.markdown(f"**Total Resisting Force ($F_r$):** $F_r = F_{friction} + P_p + F_{cohesion} = {stab['F_friction']:.2f} + {stab['Pp_allow']:.2f} + {stab['F_cohesion']:.2f} = {stab['FOS_SL'] * stab['H']:.2f} \\text{ kN/m}$")
-    st.markdown(f"**FOS Sliding:** $\\text{FOS}_{SL} = F_r / P_H = {stab['FOS_SL'] * stab['H']:.2f} / {stab['H']:.2f} = \\mathbf{{{stab['FOS_SL']:.2f}}}$ (Required $\\ge 1.5$)")
+    st.markdown(f"**Total Resisting Force ($F_r$):** $F_r = F_{friction} + P_p + F_{cohesion} = {stab['F_friction']:.2f} + {stab['Pp_allow']:.2f} + {stab['F_cohesion']:.2f} = {F_r_val:.2f} \\text{ kN/m}$")
+    st.markdown(f"**FOS Sliding:** $\\text{FOS}_{SL} = F_r / P_H = {F_r_val:.2f} / {stab['H']:.2f} = **{stab['FOS_SL']:.2f}**$ (Required $\\ge 1.5$)")
 
     # 3. Bearing Check
     st.markdown("#### 3. Bearing Capacity Check")
     st.markdown(f"**Resultant Position ($x_{res}$):** $x_{res} = M_r / V = {stab['M_r']:.2f} / {stab['V']:.2f} = {stab['x_res']:.2f} \\text{ m}$")
     st.markdown(f"**Eccentricity ($e$):** $e = x_{res} - B/2 = {stab['x_res']:.2f} - {geo.B/2:.2f} = {stab['e']:.2f} \\text{ m}$ (Contact requires $|e| \\le B/6 = {geo.B/6:.2f} \\text{ m}$)")
-    st.markdown(f"**Max Bearing Pressure ($q_{max}$):** $q_{max} = \\mathbf{{{stab['q_max']:.2f}}} \\text{ kPa}$ (Allowed $\\le {bearing.SBC_allow:.0f} \\text{ kPa}$)")
+    st.markdown(f"**Max Bearing Pressure ($q_{max}$):** $q_{max} = **{stab['q_max']:.2f}** \\text{ kPa}$ (Allowed $\\le {bearing.SBC_allow:.0f} \\text{ kPa}$)")
     
     st.divider()
     st.subheader('Stability Results Summary')
@@ -687,14 +695,14 @@ with st.expander('4.3 Member Design (ULS) and Bill of Quantities', expanded=True
         heel_As_prov = as_per_m(heel_dia, heel_sp)
         toe_As_prov = as_per_m(toe_dia, toe_sp)
         
-        # Stem Design Narrative
-        st.markdown(f"**Stem Design (Vertical):** $M_{u, stem} = {desg['Mu_stem']:.2f} \\text{ kNm/m}$. $A_{st, req} = \\mathbf{{{desg['As_stem_req']:.0f}}} \\text{ mm}^2/\\text{m}$. Provided: $\\phi{stem_dia} @ {stem_sp} \\text{ mm} \\rightarrow A_{st, prov} = {stem_As_prov:.0f} \\text{ mm}^2/\\text{m}$.")
+        # Stem Design Narrative (Simplified F-string)
+        st.markdown(f"**Stem Design (Vertical):** $M_{u, stem} = {desg['Mu_stem']:.2f} \\text{ kNm/m}$. $A_{st, req} = **{desg['As_stem_req']:.0f}** \\text{ mm}^2/\\text{m}$. Provided: $\\phi{stem_dia} @ {stem_sp} \\text{ mm} \\rightarrow A_{st, prov} = {stem_As_prov:.0f} \\text{ mm}^2/\\text{m}$.")
         
-        # Heel Design Narrative
-        st.markdown(f"**Heel Design (Top):** $M_{u, heel} = {desg['Mu_heel']:.2f} \\text{ kNm/m}$. $A_{st, req} = \\mathbf{{{desg['As_heel_req']:.0f}}} \\text{ mm}^2/\\text{m}$. Provided: $\\phi{heel_dia} @ {heel_sp} \\text{ mm} \\rightarrow A_{st, prov} = {heel_As_prov:.0f} \\text{ mm}^2/\\text{m}$.")
+        # Heel Design Narrative (Simplified F-string)
+        st.markdown(f"**Heel Design (Top):** $M_{u, heel} = {desg['Mu_heel']:.2f} \\text{ kNm/m}$. $A_{st, req} = **{desg['As_heel_req']:.0f}** \\text{ mm}^2/\\text{m}$. Provided: $\\phi{heel_dia} @ {heel_sp} \\text{ mm} \\rightarrow A_{st, prov} = {heel_As_prov:.0f} \\text{ mm}^2/\\text{m}$.")
         
-        # Toe Design Narrative
-        st.markdown(f"**Toe Design (Bottom):** $M_{u, toe} = {desg['Mu_toe']:.2f} \\text{ kNm/m}$. $A_{st, req} = \\mathbf{{{desg['As_toe_req']:.0f}}} \\text{ mm}^2/\\text{m}$. Provided: $\\phi{toe_dia} @ {toe_sp} \\text{ mm} \\rightarrow A_{st, prov} = {toe_As_prov:.0f} \\text{ mm}^2/\\text{m}$.")
+        # Toe Design Narrative (Simplified F-string)
+        st.markdown(f"**Toe Design (Bottom):** $M_{u, toe} = {desg['Mu_toe']:.2f} \\text{ kNm/m}$. $A_{st, req} = **{desg['As_toe_req']:.0f}** \\text{ mm}^2/\\text{m}$. Provided: $\\phi{toe_dia} @ {toe_sp} \\text{ mm} \\rightarrow A_{st, prov} = {toe_As_prov:.0f} \\text{ mm}^2/\\text{m}$.")
         
         # Design Table
         df_as = pd.DataFrame([
@@ -721,8 +729,6 @@ with st.expander('5. Report Generation and Downloads', expanded=False):
     st.subheader('Final Report & CAD Export')
 
     c_dxf, c_pdf, c_excel = st.columns(3)
-    # ... (Download buttons for DXF, PDF, Excel) ...
-    # Placeholder implementation
     c_dxf.info('DXF is supported with ezdxf.')
     c_pdf.info('PDF report is supported with reportlab.')
     
