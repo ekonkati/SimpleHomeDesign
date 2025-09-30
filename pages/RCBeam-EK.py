@@ -7,17 +7,14 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 
-# Attempt to import ezdxf for DXF export
-try:
-    import ezdxf
-except ImportError:
-    ezdxf = None
+# Ensure ezdxf is not required for execution
+ezdxf = None
 
 st.set_page_config(page_title="Printable RCC Beam Designer (IS Codes)", layout="wide")
 st.title("RCC Beam Designer – Printable Narrative Report")
 st.caption("Single-page design report based on IS 456 and IS 13920 (Advisory). Units: length in m/mm, loads in kN.")
 
-# ---------- CONSTANTS AND HELPERS (Derived from source) ----------
+# ---------- CONSTANTS AND HELPERS ----------
 
 def clamp(x, lo, hi):
     return max(lo, min(hi, x))
@@ -36,16 +33,16 @@ class Section:
 
     @property
     def d_eff(self):
-        # [cite_start]Assuming a default of 8mm link bar and 16mm main bar for d_eff calculation [cite: 3]
+        # Assuming a default of 8mm link bar and 16mm main bar for d_eff calculation
         return max(self.D - (self.cover + 8 + 0.5*16), 0.0)
 
-# [cite_start]τ_bd table (design bond stress) – plain bars per IS456 Table 26; deformed +60% [cite: 4]
+# τ_bd table (design bond stress) – plain bars per IS456 Table 26; deformed +60%
 TAU_BD_PLAIN = {20:1.2, 25:1.4, 30:1.5, 35:1.7, 40:1.9, 45:2.0, 50:2.2}
 
-# [cite_start]τ_c(max) approximate per IS456 Table 20 (concrete shear strength max), N/mm2 [cite: 4]
+# τ_c(max) approximate per IS456 Table 20 (concrete shear strength max), N/mm2
 TAU_C_MAX = {20:2.8, 25:3.1, 30:3.5, 35:3.7, 40:4.0}
 
-# [cite_start]τ_c interpolation tables for p_t (partial from source) [cite: 4]
+# τ_c interpolation tables for p_t (partial from source)
 TC_TABLE = {
     20: [(0.25,0.28),(0.50,0.38),(0.75,0.46),(1.00,0.62)],
     25: [(0.25,0.29),(0.50,0.40),(0.75,0.48),(1.00,0.62)],
@@ -57,7 +54,7 @@ TC_TABLE = {
 LD_LIMITS = {"Simply Supported":20.0, "Continuous":26.0, "Cantilever":7.0}
 
 def interp_xy(table, x):
-    # [cite_start]Function to interpolate values [cite: 5, 6]
+    # Function to interpolate values
     xs = [a for a,_ in table]
     ys = [b for _,b in table]
     if x <= xs[0]: return ys[0]
@@ -70,7 +67,7 @@ def interp_xy(table, x):
             return y0 + t*(y1-y0)
 
 def tau_c(fck, p_t):
-    # [cite_start]Calculates design shear strength of concrete τ_c [cite: 6]
+    # Calculates design shear strength of concrete τ_c
     fck_key = min(TC_TABLE.keys(), key=lambda k: abs(k - fck))
     return interp_xy(TC_TABLE[fck_key], clamp(p_t, 0.25, 1.0))
 
@@ -87,13 +84,13 @@ def ast_singly(Mu_kNm, fy, d_mm, jd_ratio=0.9):
     return Mu_Nmm / (0.87 * fy * jd)
 
 def ld_required(fck, fy, bar_dia_mm, deformed=True, tension=True):
-    # [cite_start]Calculates development length Ld (IS 456: Cl. 26.2) [cite: 20]
+    # Calculates development length Ld (IS 456: Cl. 26.2)
     fck_key = min(TAU_BD_PLAIN.keys(), key=lambda k: abs(k - fck))
     tau_bd = TAU_BD_PLAIN[fck_key]
     if deformed: tau_bd *= 1.6
     if not tension: tau_bd *= 1.25 # Compression Ld is 1.25 times tension Ld
     Ld = (bar_dia_mm * fy) / (4.0 * tau_bd)
-    return Ld, tau_bd
+    return Ld
 
 # ---------- UI INPUTS (Refactored to single column for printing) ----------
 
@@ -103,7 +100,7 @@ with st.sidebar:
     include_eq = st.checkbox("Include E/W coeff", value=False)
     eq_coeff = st.number_input("Eq. coeff (×wL²)", value=0.0, step=0.05, disabled=not include_eq)
     ductile = st.checkbox("Apply IS 13920 checks", value=True)
-    st.caption("⚠️ Use the 'Print' function of your browser after running the design.")
+    st.caption("⚠️ Use the 'Print' function of your browser (Ctrl+P / Cmd+P) for the final report.")
 
 st.header("1. Project Inputs")
 st.markdown("---")
@@ -113,46 +110,47 @@ with colA:
     st.subheader("Geometry")
     span = st.number_input("Clear span $L$ (m)", value=6.0, min_value=0.5, step=0.1)
     support = st.selectbox("End condition", ["Simply Supported","Continuous","Cantilever"], index=0)
-    [cite_start]b = st.number_input("Beam width $b$ (mm)", value=300, step=10, min_value=150) [cite: 12]
-    [cite_start]D = st.number_input("Overall depth $D$ (mm)", value=500, step=10, min_value=200) [cite: 12]
-    [cite_start]cover = st.number_input("Clear cover (mm)", value=25, step=5, min_value=20) [cite: 12]
+    b = st.number_input("Beam width $b$ (mm)", value=300, step=10, min_value=150)
+    D = st.number_input("Overall depth $D$ (mm)", value=500, step=10, min_value=200)
+    cover = st.number_input("Clear cover (mm)", value=25, step=5, min_value=20)
 
 with colB:
     st.subheader("Materials")
-    [cite_start]fck = st.selectbox("Concrete $f_{ck}$ (N/mm²)", [20,25,30,35,40], index=2) [cite: 12]
-    [cite_start]fy = st.selectbox("Steel $f_y$ (N/mm²)", [415,500], index=1) [cite: 12]
-    [cite_start]t_bar = st.selectbox("Main bar dia default (mm)", [12,16,20,25,28,32], index=1) [cite: 15]
-    [cite_start]c_bar = st.selectbox("Compression bar dia (mm)", [12,16,20,25], index=0) [cite: 15]
+    fck = st.selectbox("Concrete $f_{ck}$ (N/mm²)", [20,25,30,35,40], index=2)
+    fy = st.selectbox("Steel $f_y$ (N/mm²)", [415,500], index=1)
+    t_bar = st.selectbox("Tension bar dia default (mm)", [12,16,20,25,28,32], index=1)
+    c_bar = st.selectbox("Compression bar dia default (mm)", [12,16,20,25], index=0)
 
 with colC:
     st.subheader("Loads")
-    [cite_start]finishes = st.number_input("Finishes (kN/m)", value=2.0, step=0.1, min_value=0.0) [cite: 12]
-    [cite_start]ll = st.number_input("Live load (kN/m)", value=5.0, step=0.5, min_value=0.0) [cite: 12]
-    [cite_start]wall_thk = st.number_input("Wall thk (mm)", value=115, step=115, min_value=0, disabled=not use_wall) [cite: 13]
-    [cite_start]wall_h = st.number_input("Wall height (m)", value=3.0, step=0.1, min_value=0.0, disabled=not use_wall) [cite: 13]
-    [cite_start]wall_density = st.number_input("Masonry density (kN/m³)", value=19.0, step=0.5, disabled=not use_wall) [cite: 13]
+    finishes = st.number_input("Finishes (kN/m)", value=2.0, step=0.1, min_value=0.0)
+    ll = st.number_input("Live load (kN/m)", value=5.0, step=0.5, min_value=0.0)
+    wall_thk = st.number_input("Wall thk (mm)", value=115, step=115, min_value=0, disabled=not use_wall)
+    wall_h = st.number_input("Wall height (m)", value=3.0, step=0.1, min_value=0.0, disabled=not use_wall)
+    wall_density = st.number_input("Masonry density (kN/m³)", value=19.0, step=0.5, disabled=not use_wall)
 
 st.subheader("Design Action Source")
-[cite_start]action_mode = st.radio("Use:", ["Derive from loads", "Direct design actions"], index=0, horizontal=True) [cite: 13]
+action_mode = st.radio("Use:", ["Derive from loads", "Direct design actions"], index=0, horizontal=True)
 
 Mu_in, Vu_in, Tu_in, Nu_in = 0.0, 0.0, 0.0, 0.0
 if action_mode == "Direct design actions":
-    [cite_start]st.info("Enter factored design actions (ULS) at the critical section. Signs are ignored for moment/shear/torsion.") [cite: 14]
+    st.info("Enter factored design actions (ULS) at the critical section. Signs are ignored for moment/shear/torsion.")
     colX,colY = st.columns(2)
     with colX:
-        [cite_start]Mu_in = st.number_input("Design bending moment $M_u$ (kN·m)", value=120.0, step=5.0, min_value=0.0) [cite: 14]
-        [cite_start]Vu_in = st.number_input("Design shear $V_u$ (kN)", value=180.0, step=5.0, min_value=0.0) [cite: 14]
+        Mu_in = st.number_input("Design bending moment $M_u$ (kN·m)", value=120.0, step=5.0, min_value=0.0)
+        Vu_in = st.number_input("Design shear $V_u$ (kN)", value=180.0, step=5.0, min_value=0.0)
     with colY:
-        [cite_start]Tu_in = st.number_input("Design torsion $T_u$ (kN·m)", value=0.0, step=1.0, min_value=0.0) [cite: 14]
-        [cite_start]Nu_in = st.number_input("Design axial $N_u$ (kN) (+compression)", value=0.0, step=5.0) [cite: 15]
+        Tu_in = st.number_input("Design torsion $T_u$ (kN·m)", value=0.0, step=1.0, min_value=0.0)
+        Nu_in = st.number_input("Design axial $N_u$ (kN) (+compression)", value=0.0, step=5.0)
 
 st.subheader("Reinforcement Layout")
-st.caption("Define bar groups below. These will be used for $A_{st, prov}$ and drawing the section.")
+st.caption("Define bar groups below for $A_{st, prov}$ and drawing. **Length in m.**")
 if "rebar_df" not in st.session_state:
     st.session_state.rebar_df = pd.DataFrame([
-        {"id":"B1","position":"bottom","zone":"span","dia_mm":20,"count":2,"continuity":"continuous","start_m":0.0,"end_m":None},
-        {"id":"T1","position":"top","zone":"support","dia_mm":12,"count":2,"continuity":"continuous","start_m":0.0,"end_m":None},
-    [cite_start]]) [cite: 9, 10]
+        {"id":"B1","position":"bottom","zone":"span","dia_mm":int(t_bar),"count":2,"continuity":"continuous","start_m":0.0,"end_m":span},
+        {"id":"T1","position":"top","zone":"continuous","dia_mm":int(c_bar),"count":2,"continuity":"continuous","start_m":0.0,"end_m":span},
+        {"id":"B2","position":"bottom","zone":"span","dia_mm":16,"count":2,"continuity":"curtailed","start_m":0.2,"end_m":span-0.2},
+    ])
 rebar_df_edited = st.data_editor(st.session_state.rebar_df, num_rows="dynamic")
 st.session_state.rebar_df = rebar_df_edited
 
@@ -174,85 +172,76 @@ if action_mode == "Direct design actions":
     Vu_kN  = float(abs(Vu_in))
     Tu_kNm = float(abs(Tu_in))
     Nu_kN  = float(Nu_in)
-    w_ULS_15 = 0.0 # Not used for direct input
+    w_ULS_15 = 0.0 
 else:
-    # Basic ULS Load Combinations (IS 456: Cl 18.2.1, Table 4)
-    w_ULS_15 = 1.5 * (w_DL + w_LL) # Primary for DL+LL
+    w_ULS_15 = 1.5 * (w_DL + w_LL) 
     
     # Use standard coefficients (IS 456: Table 12 & 13 for approximate analysis)
     if support=="Simply Supported": kM, kV = 1/8, 0.5
     elif support=="Cantilever": kM, kV = 1/2, 1.0
-    else: kM, kV = 1/12, 0.6 # Continuous beam simplified span moments/shears
+    else: kM, kV = 1/12, 0.6 
 
     Mu_kNm = kM * w_ULS_15 * (L**2)
     Vu_kN  = kV * w_ULS_15 * L
 
     if include_eq and eq_coeff > 0:
-        # Load combination 1.2(DL+LL+EL)
         w_ULS_12 = 1.2 * (w_DL + w_LL)
-        Mu_kNm += eq_coeff * w_ULS_12 * (L**2) # Simplified moment addition
+        Mu_kNm += eq_coeff * w_ULS_12 * (L**2) 
     
     Tu_kNm = 0.0
     Nu_kN  = 0.0
 
 # Calculate Provided Ast at Midspan (Assumes midspan is governed by bottom steel)
-def ast_from_rows(rows, pos_filter, zone_filter=None):
+def ast_from_rows(rows, pos_filter):
     sel = rows[rows["position"].str.lower()==pos_filter]
-    if zone_filter:
-        sel = sel[sel["zone"].str.lower().isin(zone_filter)]
     areas = (math.pi*(sel["dia_mm"]**2)/4.0) * sel["count"]
     return float(areas.sum())
 
-[cite_start]Ast_bottom_span = ast_from_rows(rebar_df_edited, "bottom", ["span","all"]) [cite: 18]
-Ast_prov = max(Ast_bottom_span, 1.0) # Use this for shear calculations
+Ast_bottom_span = ast_from_rows(rebar_df_edited, "bottom")
+Ast_prov = max(Ast_bottom_span, 1.0) 
 
 # Flexure Calculations
-[cite_start]Mu_lim = mu_lim_rect(mat.fck, sec.b, d, mat.fy) [cite: 17]
-[cite_start]Ast_req = ast_singly(Mu_kNm, mat.fy, d) [cite: 17]
-Ast_min = (0.85 * b * d) / fy / 1000000 * 1000 * 1000 # (0.85 * b * d) / fy
-Ast_max = 0.04 * b * D / 100 * 100 # 0.04 * b * D
+Mu_lim = mu_lim_rect(mat.fck, sec.b, d, mat.fy)
+Ast_req = ast_singly(Mu_kNm, mat.fy, d)
+Ast_min = (0.85 * b * d) / fy 
+Ast_max = 0.04 * b * D 
 
 # Shear Calculations
-# Equivalent shear (IS 456: Cl. 41.3.1)
-[cite_start]Vu_eff_kN = Vu_kN + (1.6 * Tu_kNm * 1000.0 / sec.b) if Tu_kNm > 0 else Vu_kN [cite: 19]
+Vu_eff_kN = Vu_kN + (1.6 * Tu_kNm * 1000.0 / sec.b) if Tu_kNm > 0 else Vu_kN
 
 def shear_design(Vu_kN_eff, b_mm, d_mm, fck, fy, Ast_mm2):
-    [cite_start]tau_v = (Vu_kN_eff * 1e3) / (b_mm * d_mm) [cite: 7]
-    [cite_start]p_t = 100.0 * Ast_mm2 / (b_mm * d_mm) [cite: 7]
+    tau_v = (Vu_kN_eff * 1e3) / (b_mm * d_mm)
+    p_t = 100.0 * Ast_mm2 / (b_mm * d_mm)
     tc = tau_c(fck, p_t)
-    [cite_start]tc_max = TAU_C_MAX[min(TAU_C_MAX.keys(), key=lambda k: abs(k - fck))] [cite: 7]
+    tc_max = TAU_C_MAX[min(TAU_C_MAX.keys(), key=lambda k: abs(k - fck))]
     
-    [cite_start]Vus_kN = Vu_kN_eff - tc * b_mm * d_mm / 1e3 [cite: 8]
+    Vus_kN = Vu_kN_eff - tc * b_mm * d_mm / 1e3
     
     # Calculate required spacing for an 8mm 2-leg stirrup
     phi, legs = 8.0, 2
     Asv = legs * math.pi * (phi**2) / 4.0
     s_v_req = (0.87 * fy * Asv * d_mm) / (Vus_kN * 1e3) if Vus_kN > 0 else float('inf')
+    s_v_min = (0.87 * fy * Asv) / (0.4 * b_mm) # For minimum steel
     
-    # Max spacing (IS 456: Cl 26.5.1.5)
     s_v_max_limit = min(0.75 * d_mm, 300.0)
-    
-    # Minimum shear reinforcement spacing (IS 456: Cl 26.5.1.6)
-    Asv_min = 0.4 * b_mm * s_v_max_limit / (0.87 * fy)
     
     return {"tau_v": tau_v, "p_t": p_t, "tau_c": tc, "tau_c_max": tc_max,
             "Vus_kN": Vus_kN, "s_v_req": s_v_req, "s_v_max_limit": s_v_max_limit,
-            "min_shear_needed": s_v_req == float('inf') or Vus_kN <= 0,
+            "s_v_min_spacing": s_v_min,
+            "min_shear_needed": Vus_kN <= 0,
             "stirrup_size": f"{int(phi)} mm {legs}-leg"}
 
 shear_res = shear_design(Vu_eff_kN, sec.b, d, mat.fck, mat.fy, Ast_prov)
 
 # Serviceability (L/d)
-[cite_start]Ld_tension, _ = ld_required(mat.fck, mat.fy, t_bar) [cite: 20]
-[cite_start]base_Ld = LD_LIMITS[support] [cite: 20]
-p_t_service = 100.0 * Ast_prov / (sec.b * d)
-mod = clamp(1.0 + 0.15 * (p_t_service - 1.0), 0.8, 1.3) # Approximate modification factor
-[cite_start]allowable_L_over_d = base_Ld * mod [cite: 20]
-[cite_start]actual_L_over_d = (L * 1000.0) / d [cite: 20]
+Ld_tension = ld_required(mat.fck, mat.fy, t_bar, tension=True)
+Ld_comp = ld_required(mat.fck, mat.fy, c_bar, tension=False) # Ld in compression
 
-# --- DXF Drawing Helpers (Refactored to live inside a try block) ---
-# (Helper functions for DXF export moved here to avoid cluttering the main flow)
-# ... (Original DXF functions _agg_bars, _cross_section_dxf_bytes, _longitudinal_dxf_bytes)
+base_Ld = LD_LIMITS[support]
+p_t_service = 100.0 * Ast_prov / (sec.b * d)
+mod = clamp(1.0 + 0.15 * (p_t_service - 1.0), 0.8, 1.3) 
+allowable_L_over_d = base_Ld * mod
+actual_L_over_d = (L * 1000.0) / d
 
 # ---------- RESULTS AND NARRATIVE REPORT ----------
 
@@ -280,20 +269,15 @@ else:
 
 st.subheader("2.3 Flexural Design (IS 456: Cl. 26.5)")
 
-# Check Mu vs Mu_lim
 st.markdown(f"**Ultimate Moment Capacity ($M_{{u,lim}}$)**: $0.133(0.138)f_{{ck}}bd^2 = **{Mu_lim:.1f}**$ kN·m.")
 if Mu_kNm > Mu_lim:
     st.error("❌ $M_u$ > $M_{{u,lim}}$. **SECTION MUST BE INCREASED IN SIZE.**")
 else:
     st.success("✅ Section size is adequate for flexure ($M_u \leq M_{{u,lim}}$).")
     
-    # Required Steel
     st.markdown(f"**Required Tension Steel ($A_{{st, req}}$)**: $M_u / (0.87 f_y j d) = **{Ast_req:.0f}**$ mm².")
-    
-    # Provided Steel
     st.markdown(f"**Provided Tension Steel ($A_{{st, prov}}$)**: **{Ast_prov:.0f}** mm² (from Rebar Layout table).")
     
-    # Min/Max Checks
     st.markdown(f"**Minimum $A_{{st}}$ (Cl 26.5.1.1)**: {Ast_min:.0f} mm². **Maximum $A_{{st}}$ (Cl 26.5.1.2)**: {Ast_max:.0f} mm².")
     
     if Ast_prov < Ast_req:
@@ -316,8 +300,8 @@ if shear_res["tau_v"] > shear_res["tau_c_max"]:
     st.error("❌ **SECTION FAILURE**: $\\tau_v > \\tau_{{c,max}}$. Increase section size or $f_{{ck}}$.")
 elif shear_res["min_shear_needed"]:
     st.success("✅ Concrete carries all shear. Provide minimum shear reinforcement.")
-    s_v_final = min(shear_res['s_v_max_limit'], 300.0) # Simplified minimum link spacing (0.87*fy*Asv/(0.4*b)) not calculated here
-    st.write(f"**Stirrup Spacing**: Provide **{shear_res['stirrup_size']} @ {s_v_final:.0f} mm c/c** (Max limit for minimum steel).")
+    s_v_final = min(shear_res['s_v_max_limit'], shear_res['s_v_min_spacing']) 
+    st.write(f"**Stirrup Spacing**: Provide **{shear_res['stirrup_size']} @ {s_v_final:.0f} mm c/c** (Minimum requirement, Cl 26.5.1.6).")
 else:
     st.warning("⚠️ Shear links required. Concrete capacity $V_{uc} = {Vu_eff_kN - shear_res['Vus_kN']:.1f}$ kN.")
     s_v_final = clamp(shear_res['s_v_req'], 50, shear_res['s_v_max_limit'])
@@ -338,18 +322,18 @@ else:
 
 st.subheader("2.6 Development Length ($L_d$) and Ductile Detailing (IS 13920)")
 
-st.write(f"**Required Development Length $L_d$ (Tension)**: $\\phi f_y / (4 \\tau_{{bd}}) = **{Ld_tension:.0f}**$ mm.")
-st.write(f"**Required Development Length $L_d$ (Compression)**: **{Ld_comp:.0f}** mm (1.25 times tension $L_d$).")
+st.write(f"**Required Development Length $L_d$ (Tension)**: **{Ld_tension:.0f}** mm (for $\\phi={t_bar}$ mm).")
+st.write(f"**Required Development Length $L_d$ (Compression)**: **{Ld_comp:.0f}** mm (for $\\phi={c_bar}$ mm).")
 
 if ductile:
-    [cite_start]hinge_len_mm = max(2*d, 600) [cite: 34]
-    [cite_start]phi_main = max(12, int(st.session_state.rebar_df['dia_mm'].max()) if not st.session_state.rebar_df.empty else 12) [cite: 34]
-    [cite_start]max_hoop = min(0.25*d, 8*phi_main, 100) [cite: 34]
+    hinge_len_mm = max(2*d, 600)
+    phi_main = max(12, int(st.session_state.rebar_df['dia_mm'].max()) if not st.session_state.rebar_df.empty else 12)
+    max_hoop = min(0.25*d, 8*phi_main, 100)
 
     st.warning("⚠️ **IS 13920 Advisory Checks**")
-    [cite_start]st.write(f"**Confinement Length** at each end $\\geq 2d$ or $600\\text{ mm} = **{hinge_len_mm:.0f}**$ mm.") [cite: 35]
-    [cite_start]st.write(f"**Hoop Spacing in Hinge Zone** $\\leq \min(0.25d, 8\\phi_{{main}}, 100) = **{max_hoop:.0f}**$ mm.") [cite: 35]
-    [cite_start]st.caption("Detailed design shear based on probable moments and joint checks must be verified separately.") [cite: 36]
+    st.write(f"**Confinement Length** at each end $\\geq 2d$ or $600\\text{ mm} = **{hinge_len_mm:.0f}**$ mm.")
+    st.write(f"**Hoop Spacing in Hinge Zone** $\\leq \min(0.25d, 8\\phi_{{main}}, 100) = **{max_hoop:.0f}**$ mm.")
+    st.caption("Detailed design shear based on probable moments and joint checks must be verified separately.")
 
 # ---------- VISUALIZATIONS AND EXPORT ----------
 
@@ -362,15 +346,14 @@ st.subheader("3.1 Factored Bending Moment and Shear Force Diagrams")
 xs = np.linspace(0, L, 50)
 if action_mode == "Derive from loads":
     if support != "Cantilever":
-        M = [kM * w_ULS_15 * (L * x - x * x) for x in xs]
+        M = [w_ULS_15 * x * (L - x) / 2 for x in xs] if support == "Simply Supported" else [w_ULS_15 * x * (L - x) / 8 for x in xs] # Simplified
         V = [w_ULS_15 * (L / 2 - x) for x in xs]
     else:
         M = [-0.5 * w_ULS_15 * (x ** 2) for x in xs]
         V = [-w_ULS_15 * x for x in xs]
 else:
-    # Use representative simple span actions for visualization if direct input is used
-    M = [Mu_kNm * (x / L) for x in xs]
-    V = [Vu_kN * (1 - 2*x/L) for x in xs]
+    M = [Mu_kNm * np.sin(np.pi * x / L) / np.sin(np.pi / 2) for x in xs] if support == "Simply Supported" else [Mu_kNm * (x / L) for x in xs] 
+    V = [Vu_kN * np.cos(np.pi * x / L) for x in xs] if support == "Simply Supported" else [Vu_kN * (1 - 2*x/L) for x in xs]
 
 dfM = pd.DataFrame({"x": xs, "M (kN·m)": M}).set_index("x")
 dfV = pd.DataFrame({"x": xs, "V (kN)": V}).set_index("x")
@@ -386,22 +369,16 @@ st.plotly_chart(fig_V, use_container_width=True)
 
 st.subheader("3.2 Cross-Section Drawing (Schematic)")
 
-# Simplified Plotly/SVG for cross-section
 def draw_cross_section_plotly(b_mm, D_mm, cover_mm, df_rebar):
     fig = go.Figure()
     
-    # Concrete outline
     fig.add_shape(type="rect", x0=0, y0=0, x1=b_mm, y1=D_mm, 
                   line=dict(color="black", width=2), fillcolor="rgba(192, 192, 192, 0.5)")
     
-    # Stirrup outline (approx at cover)
     cc = float(cover_mm)
-    stirrup_w = b_mm - 2*cc
-    stirrup_h = D_mm - 2*cc
     fig.add_shape(type="rect", x0=cc, y0=cc, x1=b_mm-cc, y1=D_mm-cc, 
                   line=dict(color="black", width=1), fillcolor="rgba(0,0,0,0)")
 
-    # Aggregate bars by position
     bottom_bars = df_rebar[df_rebar["position"].str.lower()=="bottom"].groupby("dia_mm")["count"].sum().reset_index()
     top_bars    = df_rebar[df_rebar["position"].str.lower()=="top"].groupby("dia_mm")["count"].sum().reset_index()
 
@@ -414,7 +391,6 @@ def draw_cross_section_plotly(b_mm, D_mm, cover_mm, df_rebar):
         
         n = len(bars)
         
-        # Calculate x positions
         if n == 1:
             xs = [b_mm / 2.0]
         else:
@@ -422,28 +398,19 @@ def draw_cross_section_plotly(b_mm, D_mm, cover_mm, df_rebar):
             step = span_avail / (n - 1)
             xs = [cc + i * step for i in range(n)]
 
-        # Place the circles (bars)
         for i, phi in enumerate(bars):
             r = phi / 2.0
             
-            # Y position adjusted for bar radius
-            if is_bottom:
-                y = y_ref + r
-            else:
-                y = y_ref - r
+            y = y_ref + r if is_bottom else y_ref - r
                 
             fig.add_shape(type="circle", x0=xs[i]-r, y0=y-r, x1=xs[i]+r, y1=y+r,
                           line=dict(color="blue", width=1), fillcolor="blue")
             
-        # Add annotation for label (simplified)
         label = "+".join([f"{bars.count(d)}-Ø{d}" for d in sorted(set(bars), reverse=True)])
-        pos_txt = "BOTTOM" if is_bottom else "TOP"
+        pos_txt = "TENSION" if is_bottom else "COMPRESSION"
         fig.add_annotation(x=b_mm + 50, y=y, text=f"{label} {pos_txt}", showarrow=False, font=dict(size=10))
 
-
-    # Y reference for bottom layer (from bottom face of beam)
     y_ref_bottom = cc
-    # Y reference for top layer (from top face of beam)
     y_ref_top = D_mm - cc
     
     place_bars(bottom_bars, y_ref_bottom, is_bottom=True)
@@ -455,7 +422,7 @@ def draw_cross_section_plotly(b_mm, D_mm, cover_mm, df_rebar):
         yaxis_title="Depth (mm)",
         height=400, width=500,
         yaxis_range=[0, D_mm],
-        xaxis_range=[0, b_mm+100],
+        xaxis_range=[-50, b_mm+150],
         showlegend=False,
         plot_bgcolor='white',
     )
@@ -463,51 +430,75 @@ def draw_cross_section_plotly(b_mm, D_mm, cover_mm, df_rebar):
     st.plotly_chart(fig, use_container_width=True)
 
 draw_cross_section_plotly(b, D, cover, rebar_df_edited)
-st.caption("Bar sizes are to scale; spacing is schematic for visualization.")
 
-# ---------- DXF EXPORT SECTION ----------
+st.subheader("3.3 Longitudinal Section Drawing (Schematic)")
+
+def draw_longitudinal_section_plotly(L_m, D_mm, cover_mm, df_rebar):
+    fig = go.Figure()
+    
+    # 1. Concrete outline (beam elevation)
+    fig.add_shape(type="rect", x0=0, y0=0, x1=L_m * 1000, y1=D_mm, 
+                  line=dict(color="black", width=2), fillcolor="rgba(192, 192, 192, 0.5)")
+    
+    # 2. Main Reinforcement
+    for _, row in df_rebar.iterrows():
+        start_x = row['start_m'] * 1000
+        end_x = row['end_m'] * 1000
+        dia = row['dia_mm']
+        count = row['count']
+        pos = row['position'].lower()
+        
+        # Calculate Y position (centerline of bar)
+        y_center = cover_mm + dia / 2.0
+        if pos == 'top':
+            y_center = D_mm - y_center
+        
+        # Draw bar (line)
+        fig.add_trace(go.Scatter(
+            x=[start_x, end_x], y=[y_center, y_center],
+            mode='lines',
+            line=dict(color='blue', width=count * 2, dash='solid'),
+            name=f"{count}-Ø{dia} {pos.capitalize()}"
+        ))
+        
+        # Add label
+        label = f"{count}-Ø{dia} {pos.capitalize()}"
+        mid_x = (start_x + end_x) / 2
+        fig.add_annotation(x=mid_x, y=y_center + 20, text=label, showarrow=False, font=dict(size=10))
+
+    # 3. Supports (triangles/rects)
+    fig.add_shape(type="rect", x0=-20, y0=0, x1=20, y1=-D_mm/4, fillcolor="black")
+    fig.add_shape(type="rect", x0=L_m*1000 - 20, y0=0, x1=L_m*1000 + 20, y1=-D_mm/4, fillcolor="black")
+    
+    fig.update_layout(
+        title="Longitudinal Elevation (Beam)",
+        xaxis_title="Length (mm)",
+        yaxis_title="Depth (mm)",
+        height=400,
+        yaxis_range=[ -D_mm/2, D_mm*1.2], # Ensure supports are visible
+        xaxis_range=[-100, L_m * 1000 + 100],
+        showlegend=False,
+        plot_bgcolor='white',
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+draw_longitudinal_section_plotly(L, D, cover, rebar_df_edited)
+
 
 st.header("4. Export Options")
 st.markdown("---")
 
-# Note: The original helper functions for DXF need to be defined *before* this block.
-# Since I cannot include the full, working DXF code, I'll provide the UI structure
-# and assume the helper functions from the source code are available.
-
-if ezdxf:
-    # Build and offer downloads (Assuming the original _cross_section_dxf_bytes and _longitudinal_dxf_bytes are available)
-    
-    # Placeholder for DXF generation:
-    # cs_bytes = _cross_section_dxf_bytes(b, D, cover, rebar_df_edited)
-    # lg_bytes = _longitudinal_dxf_bytes(b, D, cover, L, rebar_df_edited)
-    
-    # Mock bytes for demonstration
-    cs_bytes = b"MOCK DXF CROSS SECTION DATA"
-    lg_bytes = b"MOCK DXF LONGITUDINAL DATA"
-
-    col_dxf_1, col_dxf_2 = st.columns(2)
-    with col_dxf_1:
-        st.download_button("⬇️ Download DXF – Cross Section", data=cs_bytes, 
-                           file_name=f"beam_cross_{int(b)}x{int(D)}.dxf", mime="application/dxf")
-    with col_dxf_2:
-        st.download_button("⬇️ Download DXF – Longitudinal Elevation", data=lg_bytes, 
-                           file_name=f"beam_longitudinal_{int(L*1000)}mm.dxf", mime="application/dxf")
-    st.caption("DXF export units are in millimetres. **Requires 'ezdxf' library.**")
-else:
-    [cite_start]st.error("`ezdxf` library is not installed. DXF export is disabled.") [cite: 60]
-
-# --- Summary CSV Export (for Data Record) ---
-
 summary = {
-    "span": [L], "support": [support],
+    "span": [L], "support": [support], "b_mm": [b], "D_mm": [D], "d_eff_mm": [d],
     "mode": [action_mode],
     "Mu_kNm": [Mu_kNm], "Vu_kN": [Vu_kN], "Tu_kNm": [Tu_kNm], "Nu_kN": [Nu_kN],
-    "Ast_req": [Ast_req], "Ast_prov_mid": [Ast_prov],
-    "Ld_tension": [Ld_tension], "Ld_comp": [Ld_comp],
-    "allowable_L/d": [allowable_L_over_d], "actual_L/d": [actual_L_over_d]
-[cite_start]} [cite: 27]
+    "Ast_req_mm2": [Ast_req], "Ast_prov_mid_mm2": [Ast_prov],
+    "Ld_tension_mm": [Ld_tension], "Ld_comp_mm": [Ld_comp],
+    "Allowable_L/d": [allowable_L_over_d], "Actual_L/d": [actual_L_over_d],
+    "Shear_Spacing_mm": [s_v_final]
+}
 df_summary = pd.DataFrame(summary)
 buf = io.StringIO()
 df_summary.to_csv(buf, index=False)
 
-[cite_start]st.download_button("Download Summary CSV", data=buf.getvalue(), file_name="beam_summary.csv") [cite: 28]
+st.download_button("⬇️ Download Design Summary CSV", data=buf.getvalue(), file_name="beam_summary.csv")
