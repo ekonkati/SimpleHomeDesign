@@ -13,7 +13,7 @@ import plotly.express as px
 # -----------------------------
 # 1. CONSTANTS, UTILITIES, and SECTION DATACLASS
 # -----------------------------
-ES = 200000.0  # MPa (N/mm2)
+ES = 200000.0  # MPa (N/mm2) - Young's Modulus of Steel
 EPS_CU = 0.0035  # Ultimate concrete compressive strain
 
 def Ec_from_fck(fck: float) -> float:
@@ -81,65 +81,68 @@ class Section:
 # 2. CORE ENGINEERING LOGIC 
 # -----------------------------
 
+def linspace_points(a: float, c: float, n: int) -> List[float]:
+    """Generates equally spaced points, including endpoints."""
+    if n <= 0: return []
+    if n == 1: return [a + (c - a) / 2.0]
+    return [a + i * (c - a) / (n - 1) for i in range(n)]
+
+
 def generate_rectangular_bar_layout(b: float, D: float, cover: float, 
                                     n_top: int, n_bot: int, n_left: int, n_right: int, 
                                     dia_top: float, dia_bot: float, dia_side: float) -> List[Tuple[float, float, float]]:
-    """Generates bar list (x, y, dia) for a rectangular tied column. Origin at (0, 0, bottom-left).
-    Simplified logic to avoid complex conditional branching.
     """
-    bars = []
+    Generates bar list (x, y, dia) for a rectangular tied column. Origin at (0, 0, bottom-left).
+    Uses a set for uniqueness and handles different bar diameters for rows/sides.
+    """
+    bars_set = set() # Store (x, y, dia) tuples, rounded for floating point uniqueness
+    ROUND_DIGITS = 4
     
-    def linspace(a, c, n):
-        if n <= 1: return [a + (c - a) / 2.0]
-        return [a + i * (c - a) / (n - 1) for i in range(n)]
-
-    # Distances from edge to bar centerline
-    dx_bar = cover + dia_side / 2.0
-    dy_bar_top = D - (cover + dia_top / 2.0) # Measured from (0,0) bottom-left
-    dy_bar_bot = cover + dia_bot / 2.0      # Measured from (0,0) bottom-left
+    # 1. Bar Centerline Coordinates
+    dx_side = cover + dia_side / 2.0
+    dy_bot = cover + dia_bot / 2.0
+    dy_top = D - (cover + dia_top / 2.0)
     
-    # 1. Top Row
+    # 2. Top and Bottom Rows
     if n_top > 0:
-        x_span = linspace(dx_bar, b - dx_bar, n_top)
-        for x in x_span:
-            bars.append((x, dy_bar_top, dia_top))
+        x_coords = linspace_points(dx_side, b - dx_side, n_top)
+        for x in x_coords:
+            bars_set.add((round(x, ROUND_DIGITS), round(dy_top, ROUND_DIGITS), dia_top))
 
-    # 2. Bottom Row
     if n_bot > 0:
-        x_span = linspace(dx_bar, b - dx_bar, n_bot)
-        for x in x_span:
-            bars.append((x, dy_bar_bot, dia_bot))
-
-    # 3. Left & Right Columns (must align with corners and use side bar properties)
-    n_y_span = max(n_left, n_right, 1)
-    y_span = linspace(dy_bar_bot, dy_bar_top, n_y_span) # span from bottom to top
+        x_coords = linspace_points(dx_side, b - dx_side, n_bot)
+        for x in x_coords:
+            bars_set.add((round(x, ROUND_DIGITS), round(dy_bot, ROUND_DIGITS), dia_bot))
+            
+    # 3. Left and Right Columns
+    # Y-span for side bars goes from the bottom row position to the top row position
+    # The actual number of bars is n_side, but we span n_side positions.
+    n_y_span_l = n_left
+    n_y_span_r = n_right
+    
+    # Determine the y-coordinates for side bars (from bottom bar y to top bar y)
+    y_coords_l = linspace_points(dy_bot, dy_top, n_y_span_l)
+    y_coords_r = linspace_points(dy_bot, dy_top, n_y_span_r)
 
     # Left Column
-    if n_left > 0:
-        for i in range(n_left):
-            bars.append((dx_bar, y_span[i], dia_side))
+    for y in y_coords_l:
+        # Check if this position is already covered by a top/bottom bar (i.e., a corner)
+        is_corner_duplicate = any(abs(round(dx_side, ROUND_DIGITS) - bx) < 1e-4 and abs(round(y, ROUND_DIGITS) - by) < 1e-4 for bx, by, bdia in bars_set)
+        
+        # If it's a new intermediate position or if the existing corner bar is smaller, add it.
+        if not is_corner_duplicate:
+            bars_set.add((round(dx_side, ROUND_DIGITS), round(y, ROUND_DIGITS), dia_side))
 
     # Right Column
-    if n_right > 0:
-        for i in range(n_right):
-            bars.append((b - dx_bar, y_span[i], dia_side))
+    for y in y_coords_r:
+        is_corner_duplicate = any(abs(round(b - dx_side, ROUND_DIGITS) - bx) < 1e-4 and abs(round(y, ROUND_DIGITS) - by) < 1e-4 for bx, by, bdia in bars_set)
+        
+        if not is_corner_duplicate:
+            bars_set.add((round(b - dx_side, ROUND_DIGITS), round(y, ROUND_DIGITS), dia_side))
 
-    # Final cleanup for unique bars (essential step for corner bars)
-    unique_bars = []
-    for x, y, dia in bars:
-        is_unique = True
-        for i, (ux, uy, udia) in enumerate(unique_bars):
-            # Check for near-duplicate position
-            if abs(x - ux) < 1e-3 and abs(y - uy) < 1e-3:
-                # If a duplicate is found (e.g., at a corner), use the larger bar
-                if dia > udia:
-                    unique_bars[i] = (x, y, dia) 
-                is_unique = False
-                break
-        if is_unique:
-            unique_bars.append((x, y, dia))
-            
-    return unique_bars
+    # Convert set back to list of tuples for final output
+    return sorted([list(b) for b in bars_set], key=lambda x: (x[1], x[0]))
+
 
 def uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: float, axis: str) -> float:
     """
@@ -177,7 +180,6 @@ def uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: flo
         M_res = Mc + Ms  # about centroidal axis
         return N_res, M_res
 
-    # Binary search on c to match Pu (Pu must be positive/compression for search to work well)
     target = Pu
     c_min = 0.05 * dimension
     c_max = 1.50 * dimension
@@ -186,7 +188,6 @@ def uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: flo
     NL, ML = forces_and_moment(cL)
     NR, MR = forces_and_moment(cR)
 
-    # Simplified checks for out-of-bounds Pu
     if target <= NL: return ML
     if target >= NR: return MR
 
@@ -253,9 +254,9 @@ def biaxial_utilization(section: Section, fck: float, fy: float, Pu: float, Mux_
     Mux_lim = uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='x')
     Muy_lim = uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='y')
     
-    # Handle Mux_lim or Muy_lim being zero for extreme tension cases (approximate for utilization)
-    if Mux_lim < 1e-3 and abs(Mux_eff) > 1e-3: Mux_lim = 1e-3
-    if Muy_lim < 1e-3 and abs(Muy_eff) > 1e-3: Muy_lim = 1e-3
+    # Avoid division by zero if capacity is near zero (e.g., extreme tension)
+    Mux_lim = max(Mux_lim, 1e-3) if abs(Mux_eff) > 1e-3 else Mux_lim
+    Muy_lim = max(Muy_lim, 1e-3) if abs(Muy_eff) > 1e-3 else Muy_lim
         
     Rx = (abs(Mux_eff) / Mux_lim) ** alpha
     Ry = (abs(Muy_eff) / Muy_lim) ** alpha
@@ -274,10 +275,10 @@ def plotly_cross_section(section: Section) -> go.Figure:
     fig = go.Figure()
 
     # 1. Concrete Cross-Section (Outer box)
-    fig.add_shape(type="rect", x0=0, y0=0, x1=b, y1=D, line=dict(color="black", width=2), fillcolor="rgba(240, 240, 240, 0.8)")
+    fig.add_shape(type="rect", x0=0, y0=0, x1=b, y1=D, line=dict(color="black", width=2), fillcolor="rgba(240, 240, 240, 0.8)"))
 
     # 2. Clear Cover Boundary
-    fig.add_shape(type="rect", x0=cover, y0=cover, x1=b - cover, y1=D - cover, line=dict(color="gray", width=1, dash="dot"), fillcolor="rgba(0,0,0,0)")
+    fig.add_shape(type="rect", x0=cover, y0=cover, x1=b - cover, y1=D - cover, line=dict(color="gray", width=1, dash="dot"), fillcolor="rgba(0,0,0,0)"))
 
     # 3. Longitudinal Bars
     bar_x, bar_y, bar_size, bar_text = [], [], [], []
@@ -301,7 +302,7 @@ def plotly_cross_section(section: Section) -> go.Figure:
         yaxis=dict(range=[-0.1 * max_dim, D + 0.1 * max_dim], showgrid=False, zeroline=False, title="Depth (mm)"),
         width=400, height=400 * D / b if b != 0 else 400,
         showlegend=False, hovermode="closest", plot_bgcolor='white',
-        yaxis_scaleanchor="x", yaxis_scaleratio=1 # Force 1:1 aspect ratio
+        yaxis_scaleanchor="x", yaxis_scaleratio=1
     )
     return fig
 
@@ -352,10 +353,6 @@ def plotly_elevation(state: dict, section: Section) -> go.Figure:
     )
     return fig
 
-
-# ----------------------------
-# 4. STREAMLIT UI and DATA I/O
-# ----------------------------
 def to_json_serializable(state: dict) -> dict:
     safe_state = {}
     for key, value in state.items():
@@ -515,13 +512,11 @@ st.markdown("---")
 # 3. Moments (2nd-order magnification)
 # -----------------------------
 st.header("3️⃣ Second-Order Moment Magnification")
-st.markdown("For slender columns, the design moment $M_u$ is magnified to account for P-$\delta$ effects using the formula below.")
+st.markdown("For slender columns, the design moment $M_u$ is magnified to account for P-$\delta$ effects.")
 
 # Calculations
 Ec = Ec_from_fck(state["fck"])
 st.latex(r"E_c = 5000 \sqrt{f_{ck}} = " + f"{Ec:.0f} \text{ MPa}")
-st.latex(r"\text{Critical Load: } P_{cr} = \frac{\pi^2 (0.4 E_c I_c)}{l_e^2}")
-st.latex(r"\text{Magnifier: } \delta = \frac{C_m}{1 - P_u/P_{cr}} \quad (\text{Max } 2.5, \text{ Min } 1.0 \text{ if non-sway})")
 
 delta_x = moment_magnifier(state["Pu"], state["le_x"], Ec, section.Ic_x, Cm=0.85, sway=state["sway"]) if not state["short_x"] else 1.0
 delta_y = moment_magnifier(state["Pu"], state["le_y"], Ec, section.Ic_y, Cm=0.85, sway=state["sway"]) if not state["short_y"] else 1.0
@@ -540,13 +535,13 @@ with c2:
 st.markdown("---")
 
 # -----------------------------
-# 6. Detailing and Final Check (Rebar Adjustment) -> PERFORMED HERE FIRST FOR ITERATION
+# 6. Detailing and Final Check (Rebar Adjustment)
 # -----------------------------
 with st.container():
     st.header("6️⃣ Longitudinal Rebar Adjustment & Detailing Checks")
-    st.markdown("Adjust the bar layout here to meet the required capacity from **Section 4**. The change instantly triggers analysis re-runs.")
+    st.markdown("Adjust the bar layout here. The resulting capacity is checked in **Section 4**.")
     
-    # --- Longitudinal Bar Layout (Moved from Section 1) ---
+    # --- Longitudinal Bar Layout ---
     st.markdown("### Longitudinal Bar Layout")
     cL1, cL2, cL3, cL4, cL5 = st.columns(5)
     bar_options = [12.0, 16.0, 20.0, 25.0, 28.0, 32.0]
@@ -659,7 +654,6 @@ with st.container():
     phiN_calc = 1.0 + (state["Pu"] / max(1.0, (0.25 * state["fck"] * Ag)))
     phiN = float(np.clip(phiN_calc, 0.5, 1.5))
     
-    # Using simplified minimum tau_c for safety
     tau_c = 0.62 * math.sqrt(state["fck"]) / 1.0 
     Vc = tau_c * state["b"] * d_eff * phiN
     st.latex(r"V_c = \tau_c' \cdot b \cdot d_{eff} = " + f"{kN(Vc)} \text{ kN} \quad (\tau_c' = \phi_N \tau_c)")
@@ -709,7 +703,6 @@ st.markdown("---")
 with st.container():
     st.header("7️⃣ Printable Output Summary")
     
-    # Simplified estimation for required As based on last util for output table
     As_governing = max(As_min, As_long * (state.get("util", 1.0) ** (1/state.get("alpha", 1.0))))
     
     out = {
