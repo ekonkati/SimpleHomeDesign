@@ -126,8 +126,8 @@ def demand_ast_from_M(Mu_kNm: float, d_eff_mm: float, fy_MPa: float, fck_MPa: fl
     b = 1000.0  # mm
     
     try:
-        # Check for section failure
-        Mu_lim = 0.138 * fck_MPa * b * d_eff_mm**2 # For Fe 415
+        # Check for section failure (Mu_lim for Fe 415 is 0.138 fck b d^2)
+        Mu_lim = 0.138 * fck_MPa * b * d_eff_mm**2 
         if Mu_Nmm > Mu_lim: 
             return 99999.0 
 
@@ -161,7 +161,7 @@ def get_tau_c(fck, pt):
     # Interpolate for Pt
     val = bilinear_interpolate(pt_clamped, TAU_C_TABLE, col)
     
-    # Scale for fck > 30 (not strictly allowed by table, but usually conservative)
+    # Scale for fck > 30 
     if fck > 30:
         val = val * math.pow(fck/30, 0.33) 
     
@@ -296,10 +296,14 @@ M_H_corner_FL = C_Mx_corner * loads.gamma_w * geom.H**3
 
 st.subheader("2.1 Detailed Narrative on Coefficient Evaluation")
 st.markdown("""
-The coefficients are evaluated based on **IS 3370 (Part 4)**, treating the wall as a **rectangular plate fixed at the base and continuous/fixed at the vertical corners**, subjected to triangular hydrostatic pressure.
-* **Vertical Moment ($M_{My}$):** Max moment at the base fixed joint.
-* **Hoop Tension ($T_H$):** Max horizontal tension due to circumferential expansion.
-* **Horizontal Moment ($M_{Mx}$):** Moment near the vertical wall corners due to plate bending.
+The coefficients are evaluated based on **IS 3370 (Part 4)**, which treats the wall as a **rectangular plate fixed at the base and continuous/fixed at the vertical corners**, subjected to triangular hydrostatic pressure ($P_w = \gamma_w z$).
+* **Vertical Moment Coefficients ($C_{My}$):** These determine the vertical moment ($M_{My}$) at the fixed base per unit width of the wall. The wall is considered fixed along its **vertical span $H$ (at the base)** and partially restrained horizontally by the adjacent walls/corners. The moment is calculated as:
+    $$\\mathbf{M_{My}} = C_{My} \\cdot \\gamma_w \\cdot H^3$$
+    $C_{My, corner}$ is the maximum moment near the vertical corner, and $C_{My, mid}$ is the moment at the horizontal mid-span of the wall.
+* **Horizontal Tension Coefficient ($C_{T, max}$):** This coefficient determines the maximum **Hoop Tension** ($T_H$) per unit height, which acts horizontally due to the tank's circumferential restraint.
+    $$\\mathbf{T_H} = C_{T, max} \\cdot \\gamma_w \\cdot H^2$$
+* **Horizontal Moment Coefficient ($C_{Mx}$):** This determines the **Horizontal Bending Moment** ($M_{Mx}$) near the vertical corners, which arises due to the horizontal plate bending (incompatibility of hoop deflection).
+    $$\\mathbf{M_{Mx}} = C_{Mx} \\cdot \\gamma_w \\cdot H^3$$
 """)
 
 st.subheader("2.2 Unfactored Design Forces ($\text{Load Factor}=1.0$)")
@@ -354,18 +358,19 @@ with col_out:
 st.markdown("#### Shear Check (Wall Base) $\rightarrow$ IS 456:2000 Cl 40")
 V_u = gamma_f * R_liq
 tau_v = V_u * 1000 / (1000 * d_eff) 
-pt_total = ((Ast_prov_v_in + Ast_prov_v_out) / 1000) * 100 / d_eff 
-tau_c = get_tau_c(mat.fck, pt_total)
+# P_t is the percentage of tension steel (Ast_prov_v_in governs for max moment)
+pt_inner = (Ast_prov_v_in / 1000) * 100 / d_eff  
+tau_c = get_tau_c(mat.fck, pt_inner)
 k = get_k_factor(d_eff)
 tau_c_max_base = 0.6 * math.sqrt(mat.fck) # IS 456 Table 20 
 
 st.markdown(f"""
 - Ultimate Shear Force $V_u$: **{V_u:.2f} kN/m**
 - Nominal Shear Stress $\\tau_v = V_u / (b \\cdot d)$: **{tau_v:.2f} $\\text{{MPa}}$**
-- Percentage Tension Steel $P_{{t, total}}$: **{pt_total:.2f} %**
+- Percentage **Tension Steel** $P_{{t}}$ (Inner Face $A_{{st}}$): **{pt_inner:.2f} %**
 - Design Shear Strength $\\tau_c$ (from Table 19): **{tau_c:.2f} $\\text{{MPa}}$**
-- Depth Factor $k$: **{k:.2f}**
-- Maximum Shear Strength $k \\cdot \\tau_{{c, max}}$: **{k * tau_c_max_base:.2f} $\\text{{MPa}}$**
+- Depth Factor $k$ (IS 456 Cl 40.2.1.1): **{k:.2f}**
+- Maximum Shear Strength $k \\cdot \\tau_{{c, max}}$ (IS 456 Table 20): **{k * tau_c_max_base:.2f} $\\text{{MPa}}$**
 """)
 shear_result = "✅ PASS (Shear reinforcement is not required as $\\tau_v \\le \\tau_c$)" if tau_v <= tau_c else "❌ FAIL (Shear reinforcement required)"
 if tau_v > k * tau_c_max_base: shear_result = "❌ FAIL (Section redesign required - $\\tau_v > k \\tau_{c, max}$)"
@@ -453,8 +458,8 @@ st.subheader("4.2 Base Slab Moment and Reinforcement (Two-Way Slab Action)")
 
 # Max net pressure for design 
 q_base_max = loads.gamma_w * geom.H + mat.gamma_conc * geom.t_base
-q_design_unfactored = max(q_base_max - Q_avg, Ast_min_base * 0) # Max of (Water+Self - Reaction) or just water. Simplification: Use max pressure for internal design
-q_design_uls = gamma_f * q_base_max # Conservative design using full ULS load (Tank full, fixed boundaries)
+q_design_unfactored = max(q_base_max - Q_avg, Ast_min_base * 0) 
+q_design_uls = gamma_f * q_base_max 
 
 # Two-way slab moments (IS 456 Annex D simplified: Four Edges Continuous)
 L_ratio = geom.L / geom.B
