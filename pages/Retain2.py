@@ -635,56 +635,69 @@ with st.expander('4.2 Stability Checks (SLS) - Narrative & Results', expanded=Tr
     
     st.markdown("### Detailed Stability Calculation Narrative")
     
-    # Pre-calculate ALL values for simpler F-strings
-    P_H_val = stab['H']
-    V_val = stab['V']
-    Mo_val = stab['M_o']
-    Mr_val = stab['M_r']
-    FOS_OT_val = stab['FOS_OT']
+    # Pre-calculate and format ALL values for simplest F-strings
+    
+    # Values for Overturning
+    P_H_val = f"{stab['H']:.2f}"
+    V_val = f"{stab['V']:.2f}"
+    Mo_val = f"{stab['M_o']:.2f}"
+    Mr_val = f"{stab['M_r']:.2f}"
+    FOS_OT_val = f"**{stab['FOS_OT']:.2f}**"
+    
+    P_e_val = f"{pres['P_earth']:.2f}"
+    P_s_val = f"{pres['P_surcharge']:.2f}"
+    P_w_val = f"{pres['P_water']:.2f}"
+    P_seis_val = f"{pres['P_seismic']:.2f}"
+    
+    # Values for Sliding
+    mu_base_val = f"{bearing.mu_base:.2f}"
+    F_fric_val = f"{stab['F_friction']:.2f}"
+    c_base_val = f"{soil.c_base:.2f}"
+    B_val = f"{geo.B:.2f}"
+    F_cohesion_val = f"{stab['F_cohesion']:.2f}"
+    Pp_allow_val = f"{stab['Pp_allow']:.2f}"
+    eta_val = f"{bearing.passive_reduction:.2f}"
+    F_r_val = f"{stab['F_friction'] + stab['Pp_allow'] + stab['F_cohesion']:.2f}"
+    FOS_SL_val = f"**{stab['FOS_SL']:.2f}**"
+    
+    # Values for Bearing
+    x_res_val = f"{stab['x_res']:.2f}"
+    B_over_2_val = f"{geo.B / 2:.2f}"
+    e_val = f"{stab['e']:.2f}"
+    B_over_6_val = f"{geo.B / 6:.2f}"
+    q_max_val = f"**{stab['q_max']:.2f}**"
+    SBC_allow_val_f = f"{bearing.SBC_allow:.0f}"
 
-    F_fric_val = stab['F_friction']
-    c_base_val = soil.c_base
-    B_val = geo.B
-    F_cohesion_val = stab['F_cohesion']
-    Pp_allow_val = stab['Pp_allow']
-    eta_val = bearing.passive_reduction
-    F_r_val = stab['FOS_SL'] * stab['H']
-    FOS_SL_val = stab['FOS_SL']
-    
-    x_res_val = stab['x_res']
-    e_val = stab['e']
-    B_over_2_val = geo.B / 2
-    B_over_6_val = geo.B / 6
-    q_max_val = stab['q_max']
-    SBC_allow_val = bearing.SBC_allow
-    
+
     # 1. Overturning Check
     st.markdown("#### 1. Overturning Check")
-    st.markdown(f"**Lateral Forces (H):** $P_H = P_{earth} + P_{surcharge} + P_{water} + P_{seismic} = {pres['P_earth']:.2f} + {pres['P_surcharge']:.2f} + {pres['P_water']:.2f} + {pres['P_seismic']:.2f} = {P_H_val:.2f} \\text{ kN/m}$")
-    st.markdown(f"**Vertical Forces (V):** $V = \\sum W_i - W_{uplift} = {V_val:.2f} \\text{ kN/m}$")
-    st.markdown(f"**Overturning Moment ($M_o$):** $M_o = \\sum (P_i \\cdot y_i) = {Mo_val:.2f} \\text{ kNm/m}$")
-    st.markdown(f"**Resisting Moment ($M_r$):** $M_r = \\sum (W_i \\cdot x_i) = {Mr_val:.2f} \\text{ kNm/m}$")
-    st.markdown(f"**FOS Overturning:** $\\text{FOS}_{OT} = M_r / M_o = {Mr_val:.2f} / {Mo_val:.2f} = **{FOS_OT_val:.2f}**$ (Required $\\ge 2.0$)")
+    st.markdown(f"**Lateral Forces (H):** $P_H = P_{{earth}} + P_{{surcharge}} + P_{{water}} + P_{{seismic}} = {P_e_val} + {P_s_val} + {P_w_val} + {P_seis_val} = {P_H_val} \\text{{ kN/m}}$")
+    st.markdown(f"**Vertical Forces (V):** $V = \\sum W_i - W_{{uplift}} = {V_val} \\text{{ kN/m}}$")
+    st.markdown(f"**Overturning Moment ($M_o$):** $M_o = \\sum (P_i \\cdot y_i) = {Mo_val} \\text{{ kNm/m}}$")
+    st.markdown(f"**Resisting Moment ($M_r$):** $M_r = \\sum (W_i \\cdot x_i) = {Mr_val} \\text{{ kNm/m}}$")
+    st.markdown(f"**FOS Overturning:** $\\text{{FOS}}_{{OT}} = M_r / M_o = {Mr_val} / {Mo_val} = {FOS_OT_val}$ (Required $\\ge 2.0$)")
 
     # 2. Sliding Check
     st.markdown("#### 2. Sliding Check")
-    st.markdown(f"**Friction Resistance ($F_{friction}$):** $F_{friction} = V \\cdot \\mu = {V_val:.2f} \\cdot {bearing.mu_base:.2f} = {F_fric_val:.2f} \\text{ kN/m}$")
-    st.markdown(f"**Cohesion Resistance ($F_{cohesion}$):** $F_{cohesion} = c_{base} \\cdot B = {c_base_val:.2f} \\cdot {B_val:.2f} = {F_cohesion_val:.2f} \\text{ kN/m}$")
-    st.markdown(f"**Passive Resistance ($P_p$):** $P_p \\text{ (Allowed)} = {Pp_allow_val:.2f} \\text{ kN/m}$ ({eta_val:.2f} reduction applied)")
-    st.markdown(f"**Total Resisting Force ($F_r$):** $F_r = F_{friction} + P_p + F_{cohesion} = {F_fric_val:.2f} + {Pp_allow_val:.2f} + {F_cohesion_val:.2f} = {F_r_val:.2f} \\text{ kN/m}$")
-    st.markdown(f"**FOS Sliding:** $\\text{FOS}_{SL} = F_r / P_H = {F_r_val:.2f} / {P_H_val:.2f} = **{FOS_SL_val:.2f}**$ (Required $\\ge 1.5$)")
+    st.markdown(f"**Friction Resistance ($F_{{friction}}$):** $F_{{friction}} = V \\cdot \\mu = {V_val} \\cdot {mu_base_val} = {F_fric_val} \\text{{ kN/m}}$")
+    st.markdown(f"**Cohesion Resistance ($F_{{cohesion}}$):** $F_{{cohesion}} = c_{{base}} \\cdot B = {c_base_val} \\cdot {B_val} = {F_cohesion_val} \\text{{ kN/m}}$")
+    st.markdown(f"**Passive Resistance ($P_p$):** $P_p \\text{{ (Allowed)}} = {Pp_allow_val} \\text{{ kN/m}}$ ({eta_val} reduction applied)")
+    st.markdown(f"**Total Resisting Force ($F_r$):** $F_r = F_{{friction}} + P_p + F_{{cohesion}} = {F_fric_val} + {Pp_allow_val} + {F_cohesion_val} = {F_r_val} \\text{{ kN/m}}$")
+    st.markdown(f"**FOS Sliding:** $\\text{{FOS}}_{{SL}} = F_r / P_H = {F_r_val} / {P_H_val} = {FOS_SL_val}$ (Required $\\ge 1.5$)")
 
     # 3. Bearing Check
     st.markdown("#### 3. Bearing Capacity Check")
-    st.markdown(f"**Resultant Position ($x_{res}$):** $x_{res} = M_r / V = {Mr_val:.2f} / {V_val:.2f} = {x_res_val:.2f} \\text{ m}$")
-    st.markdown(f"**Eccentricity ($e$):** $e = x_{res} - B/2 = {x_res_val:.2f} - {B_over_2_val:.2f} = {e_val:.2f} \\text{ m}$ (Contact requires $|e| \\le B/6 = {B_over_6_val:.2f} \\text{ m}$)")
-    st.markdown(f"**Max Bearing Pressure ($q_{max}$):** $q_{max} = **{q_max_val:.2f}** \\text{ kPa}$ (Allowed $\\le {SBC_allow_val:.0f} \\text{ kPa}$)")
+    st.markdown(f"**Resultant Position ($x_{{res}}$):** $x_{{res}} = M_r / V = {Mr_val} / {V_val} = {x_res_val} \\text{{ m}}$")
+    st.markdown(f"**Eccentricity ($e$):** $e = x_{{res}} - B/2 = {x_res_val} - {B_over_2_val} = {e_val} \\text{{ m}}$ (Contact requires $|e| \\le B/6 = {B_over_6_val} \\text{{ m}}$)")
+    st.markdown(f"**Max Bearing Pressure ($q_{{max}}$):** $q_{{max}} = {q_max_val} \\text{{ kPa}}$ (Allowed $\\le {SBC_allow_val_f} \\text{{ kPa}}$)")
     
     st.divider()
     st.subheader('Stability Results Summary')
+    
+    # Use raw values for the DataFrame
     df_stab = pd.DataFrame({
         'Quantity': ['FOS Overturning', 'FOS Sliding', 'Max Bearing Pressure (kPa)', 'Allowed SBC (kPa)', 'Eccentricity (m)', 'B/6 Limit (m)'],
-        'Value': [FOS_OT_val, FOS_SL_val, q_max_val, SBC_allow_val, e_val, B_over_6_val]
+        'Value': [stab['FOS_OT'], stab['FOS_SL'], stab['q_max'], bearing.SBC_allow, stab['e'], geo.B/6]
     })
     st.dataframe(df_stab, use_container_width=True, hide_index=True)
 
@@ -697,13 +710,14 @@ with st.expander('4.3 Member Design (ULS) and Bill of Quantities', expanded=True
     with col_des:
         st.subheader('Detailed Member Design Narrative (ULS)')
         
-        fck_val = mat.fck
-        fy_val = mat.fy
-        cover_val = mat.cover
-        d_base_val = desg['d_toe']
-        d_stem_val = desg['d_stem']
+        # Pre-calculate and format values for design narrative
+        fck_val = f"{mat.fck}"
+        fy_val = f"{mat.fy}"
+        cover_val = f"{mat.cover}"
+        d_base_val = f"{desg['d_toe']:.3f}"
+        d_stem_val = f"{desg['d_stem']:.3f}"
         
-        st.markdown(f"**Materials:** $f_{ck} = {fck_val} \\text{ MPa}$, $f_y = {fy_val} \\text{ MPa}$. $\\text{Cover} = {cover_val} \\text{ mm}$. $\\text{Base Effective Depth} (d_{base}) = {d_base_val:.3f} \\text{ m}$. $\\text{Stem Effective Depth} (d_{stem}) = {d_stem_val:.3f} \\text{ m}$.")
+        st.markdown(f"**Materials:** $f_{{ck}} = {fck_val} \\text{{ MPa}}$, $f_y = {fy_val} \\text{{ MPa}}$. $\\text{{Cover}} = {cover_val} \\text{{ mm}}$. $\\text{{Base Effective Depth}} (d_{{base}}) = {d_base_val} \\text{{ m}}$. $\\text{{Stem Effective Depth}} (d_{{stem}}) = {d_stem_val} \\text{{ m}}$.")
 
         # Rebar input fields 
         c1, c2, c3 = st.columns(3)
@@ -722,14 +736,27 @@ with st.expander('4.3 Member Design (ULS) and Bill of Quantities', expanded=True
         heel_As_prov = as_per_m(heel_dia, heel_sp)
         toe_As_prov = as_per_m(toe_dia, toe_sp)
         
-        # Stem Design Narrative (Simplified F-string)
-        st.markdown(f"**Stem Design (Vertical):** $M_{u, stem} = {desg['Mu_stem']:.2f} \\text{ kNm/m}$. $A_{st, req} = **{desg['As_stem_req']:.0f}** \\text{ mm}^2/\\text{m}$. Provided: $\\phi{stem_dia} @ {stem_sp} \\text{ mm} \\rightarrow A_{st, prov} = {stem_As_prov:.0f} \\text{ mm}^2/\\text{m}$.")
+        # Format values for final output
+        Mu_stem_val = f"{desg['Mu_stem']:.2f}"
+        As_stem_req_val = f"**{desg['As_stem_req']:.0f}**"
+        stem_As_prov_val = f"{stem_As_prov:.0f}"
+
+        Mu_heel_val = f"{desg['Mu_heel']:.2f}"
+        As_heel_req_val = f"**{desg['As_heel_req']:.0f}**"
+        heel_As_prov_val = f"{heel_As_prov:.0f}"
+
+        Mu_toe_val = f"{desg['Mu_toe']:.2f}"
+        As_toe_req_val = f"**{desg['As_toe_req']:.0f}**"
+        toe_As_prov_val = f"{toe_As_prov:.0f}"
+
+        # Stem Design Narrative (Simplest F-string)
+        st.markdown(f"**Stem Design (Vertical):** $M_{{u, stem}} = {Mu_stem_val} \\text{{ kNm/m}}$. $A_{{st, req}} = {As_stem_req_val} \\text{{ mm}}^2/\\text{{m}}$. Provided: $\\phi{stem_dia} @ {stem_sp} \\text{{ mm}} \\rightarrow A_{{st, prov}} = {stem_As_prov_val} \\text{{ mm}}^2/\\text{{m}}$.")
         
-        # Heel Design Narrative (Simplified F-string)
-        st.markdown(f"**Heel Design (Top):** $M_{u, heel} = {desg['Mu_heel']:.2f} \\text{ kNm/m}$. $A_{st, req} = **{desg['As_heel_req']:.0f}** \\text{ mm}^2/\\text{m}$. Provided: $\\phi{heel_dia} @ {heel_sp} \\text{ mm} \\rightarrow A_{st, prov} = {heel_As_prov:.0f} \\text{ mm}^2/\\text{m}$.")
+        # Heel Design Narrative (Simplest F-string)
+        st.markdown(f"**Heel Design (Top):** $M_{{u, heel}} = {Mu_heel_val} \\text{{ kNm/m}}$. $A_{{st, req}} = {As_heel_req_val} \\text{{ mm}}^2/\\text{{m}}$. Provided: $\\phi{heel_dia} @ {heel_sp} \\text{{ mm}} \\rightarrow A_{{st, prov}} = {heel_As_prov_val} \\text{{ mm}}^2/\\text{{m}}$.")
         
-        # Toe Design Narrative (Simplified F-string)
-        st.markdown(f"**Toe Design (Bottom):** $M_{u, toe} = {desg['Mu_toe']:.2f} \\text{ kNm/m}$. $A_{st, req} = **{desg['As_toe_req']:.0f}** \\text{ mm}^2/\\text{m}$. Provided: $\\phi{toe_dia} @ {toe_sp} \\text{ mm} \\rightarrow A_{st, prov} = {toe_As_prov:.0f} \\text{ mm}^2/\\text{m}$.")
+        # Toe Design Narrative (Simplest F-string)
+        st.markdown(f"**Toe Design (Bottom):** $M_{{u, toe}} = {Mu_toe_val} \\text{{ kNm/m}}$. $A_{{st, req}} = {As_toe_req_val} \\text{{ mm}}^2/\\text{{m}}$. Provided: $\\phi{toe_dia} @ {toe_sp} \\text{{ mm}} \\rightarrow A_{{st, prov}} = {toe_As_prov_val} \\text{{ mm}}^2/\\text{{m}}$.")
         
         # Design Table
         df_as = pd.DataFrame([
