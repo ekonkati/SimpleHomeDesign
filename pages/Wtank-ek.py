@@ -462,6 +462,8 @@ q_design_unfactored = max(q_base_max - Q_avg, Ast_min_base * 0)
 q_design_uls = gamma_f * q_base_max 
 
 # Two-way slab moments (IS 456 Annex D simplified: Four Edges Continuous)
+# Mu_x is moment along B (short span) -> controls steel parallel to L
+# Mu_y is moment along L (long span) -> controls steel parallel to B
 L_ratio = geom.L / geom.B
 L_ratio_clamped = max(1.0, min(2.0, L_ratio))
 L_B_key = min(TWO_WAY_COEF.keys(), key=lambda x: abs(x - L_ratio_clamped))
@@ -470,35 +472,37 @@ alpha_x, alpha_y = TWO_WAY_COEF[L_B_key]
 Mu_base_x = alpha_x * q_design_uls * geom.B**2 
 Mu_base_y = alpha_y * q_design_uls * geom.B**2 
 
-Ast_req_base_x = max(demand_ast_from_M(Mu_base_x, d_eff_b, mat.fy, mat.fck), Ast_min_base)
-Ast_req_base_y = max(demand_ast_from_M(Mu_base_y, d_eff_b, mat.fy, mat.fck), Ast_min_base)
+# Steel running parallel to L (long side), resisting Mu_x (short span moment)
+Ast_req_parallel_L = max(demand_ast_from_M(Mu_base_x, d_eff_b, mat.fy, mat.fck), Ast_min_base)
+# Steel running parallel to B (short side), resisting Mu_y (long span moment)
+Ast_req_parallel_B = max(demand_ast_from_M(Mu_base_y, d_eff_b, mat.fy, mat.fck), Ast_min_base)
 
 st.markdown(f"""
 - Design ULS Pressure $q_{{u}}$: **{q_design_uls:.1f} $\\text{{kN/m}}^2$** (Using $1.5 \\times$ Total Downward Pressure)
 - $L/B$ Ratio: **{L_ratio:.2f}** $\rightarrow$ Coeff. $\\alpha_{{x}}={alpha_x:.3f}, \\alpha_{{y}}={alpha_y:.3f}$
-- Max Moment $M_{{u, x}}$ (Short Span $B$): **{Mu_base_x:.2f} kNm/m**
-- Max Moment $M_{{u, y}}$ (Long Span $L$): **{Mu_base_y:.2f} kNm/m**
+- **Moment $M_{{u, x}}$ (Short Span $B$):** **{Mu_base_x:.2f} kNm/m** (Resisted by steel $\\parallel$ to $L$)
+- **Moment $M_{{u, y}}$ (Long Span $L$):** **{Mu_base_y:.2f} kNm/m** (Resisted by steel $\\parallel$ to $B$)
 - $A_{{st, min}}$ (Base): **{Ast_min_base:.0f} $\\text{{mm}}^2/\text{{m}}$** (0.12% of total area)
-- **$A_{{st, req, x}}$ (Bottom):** **{Ast_req_base_x:.0f} $\\text{{mm}}^2/\text{{m}}$**
-- **$A_{{st, req, y}}$ (Bottom):** **{Ast_req_base_y:.0f} $\\text{{mm}}^2/\text{{m}}$**
+- **$A_{{st, req}} \\parallel L$:** **{Ast_req_parallel_L:.0f} $\\text{{mm}}^2/\text{{m}}$**
+- **$A_{{st, req}} \\parallel B$:** **{Ast_req_parallel_B:.0f} $\\text{{mm}}^2/\text{{m}}$**
 """)
 
 # --- User Selection for Base Slab Steel (Bottom/Top) ---
 st.markdown("##### Base Slab Reinforcement Selection (Bottom Mesh Governs)")
 col_bx, col_by = st.columns(2)
 with col_bx:
-    st.markdown("**Bottom Mesh - Short Span $B$ (X-Dir)**")
-    dia_b_x = st.selectbox("Bar $\phi$ (X-Dir)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_b_x")
-    s_b_x = st.selectbox("Spacing $s$ (mm c/c) X-Dir", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_b_x")
+    st.markdown("**Bottom Mesh - Parallel to L (Long Span)**")
+    dia_b_x = st.selectbox("Bar $\phi$ ($\\|\\| L$)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_b_x")
+    s_b_x = st.selectbox("Spacing $s$ (mm c/c) ($\\|\\| L$)", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_b_x")
     Ast_prov_b_x = calc_Ast_prov(dia_b_x, s_b_x)
-    pass_bx = '✅ PASS' if Ast_prov_b_x >= Ast_req_base_x else '❌ FAIL'
+    pass_bx = '✅ PASS' if Ast_prov_b_x >= Ast_req_parallel_L else '❌ FAIL'
     st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_x:.0f} $\\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_bx}**")
 with col_by:
-    st.markdown("**Bottom Mesh - Long Span $L$ (Y-Dir)**")
-    dia_b_y = st.selectbox("Bar $\phi$ (Y-Dir)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_b_y")
-    s_b_y = st.selectbox("Spacing $s$ (mm c/c) Y-Dir", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_b_y")
+    st.markdown("**Bottom Mesh - Parallel to B (Short Span)**")
+    dia_b_y = st.selectbox("Bar $\phi$ ($\\|\\| B$)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_b_y")
+    s_b_y = st.selectbox("Spacing $s$ (mm c/c) ($\\|\\| B$)", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_b_y")
     Ast_prov_b_y = calc_Ast_prov(dia_b_y, s_b_y)
-    pass_by = '✅ PASS' if Ast_prov_b_y >= Ast_req_base_y else '❌ FAIL'
+    pass_by = '✅ PASS' if Ast_prov_b_y >= Ast_req_parallel_B else '❌ FAIL'
     st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_y:.0f} $\\text{{mm}}^2/\text{{m}}$** $\rightarrow$ **{pass_by}**")
 
 st.markdown("---")
