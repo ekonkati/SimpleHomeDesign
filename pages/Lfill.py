@@ -1,9 +1,10 @@
 # Landfill Design, Stability, Visualization & Submission App (Streamlit)
 # -------------------------------------------------------------------
-# **CRITICAL FIX: INWARD EXCAVATION SLOPE (BBL)**
-# 1. BBL Geometry Fix: W_Base calculation is changed to use m_bund_in (inner slope) and is subtracted from W_GL, forcing the excavation to slope inwards.
-# 2. Plotting Fix: The cross-section drawing now correctly shows the inward-sloping excavation profile.
-# 3. All previous fixes (NameError, TypeError, KML, Min Top Area) are retained.
+# **CRITICAL FIX: REFINED EXCAVATION PROFILE**
+# 1. Removed confusing "purple extension lines" from the plot.
+# 2. Excavation slope below ground now correctly starts from **Top of Bund (TOB)** level, sloping inwards.
+# 3. W_Base calculation in compute_bbl_abl adjusted to reflect inward slope from W_TOB, ensuring proper geometry.
+# 4. All previous fixes (NameError, TypeError, KML, Min Top Area, BBL Inward Slope) are retained.
 #
 # To run:
 #   pip install streamlit numpy pandas matplotlib reportlab simplekml shapely plotly XlsxWriter openpyxl
@@ -138,26 +139,27 @@ def compute_bbl_abl(
     m_excav: float, H_final: float, m_fill: float, top_area_ratio_min: float = 0.30,
     m_outer: float = 2.5, H_int_berm: float = 5.0, W_int_berm: float = 4.0
 ) -> Dict:
-    # BBL Calculation (FIXED: BBL must slope inwards using inner slope m_bund_in)
+    # BBL Calculation (Refined: Inward excavation slope starting from TOB)
     Hb = max(Hb, 0.0); D = max(D, 0.0); H_target_above = max(H_final - Hb, 0.0)
     
-    # FIX: Use m_bund_in (or m_fill, which is usually the same inner slope) for BBL slope, and subtract.
-    m_bbl_in = m_bund_in # The slope of the landfill sides (inside)
-    
-    W_Base = max(W_GL - 2.0 * m_bbl_in * D, 0.0) # Base is smaller than GL footprint
-    L_Base = max(L_GL - 2.0 * m_bbl_in * D, 0.0)
-    
-    # Outer soil profile approx for BOQ (excavated volume) - this still uses the outer slope
-    W_excav_toe_outer = max(W_GL + 2.0 * m_excav * D, 0.0) 
-    L_excav_toe_outer = max(L_GL + 2.0 * m_excav * D, 0.0)
-    V_Native_Soil_Excavated_Approx = frustum_volume(D, W_excav_toe_outer*L_excav_toe_outer, W_GL * L_GL)
-    
+    # Calculate W_TOB and L_TOB based on the internal slope m_bund_in
     W_TOB = max(W_GL - 2.0 * m_bund_in * Hb, 0.0)
     L_TOB = max(L_GL - 2.0 * m_bund_in * Hb, 0.0)
-    A_Base = max(W_Base * L_Base, 0.0); A_GL = max(W_GL * L_GL, 0.0); A_TOB = max(W_TOB * L_TOB, 0.0)
     
+    # Now, the excavation (BBL below GL) slopes inwards from W_TOB down to W_Base
+    # The inner slope for the excavation (below GL) is the same as the bund inner slope (m_bund_in)
+    W_Base = max(W_TOB - 2.0 * m_bund_in * D, 0.0) 
+    L_Base = max(L_TOB - 2.0 * m_bund_in * D, 0.0)
+    
+    A_Base = max(W_Base * L_Base, 0.0)
+    A_GL = max(W_GL * L_GL, 0.0)
+    A_TOB = max(W_TOB * L_TOB, 0.0)
+    
+    # Volumes:
+    # V_Base_to_GL needs to be recalculated based on W_Base and W_GL.
+    # The actual landfill section below GL has profile from W_Base to W_GL
     V_Base_to_GL = frustum_volume(D, A_Base, A_GL)
-    V_GL_to_TOB = frustum_volume(Hb, A_GL, A_TOB)
+    V_GL_to_TOB = frustum_volume(Hb, A_GL, A_TOB) # This is the bund material volume
     V_BBL = V_Base_to_GL + V_GL_to_TOB
 
     # ABL Calculation (Retained logic with Min Top Area constraint)
@@ -204,18 +206,24 @@ def compute_bbl_abl(
                 L_next_crest = max(current_L - 2.0 * W_int_berm, 0.0)
                 if W_next_crest < 1e-3 or L_next_crest < 1e-3: break
                 abl_sections.append({"Z_base": current_Z, "Z_top": current_Z, "W_base": current_W, "L_base": current_L, "W_top": W_next_crest, "L_top": L_next_crest, "V": 0.0, "Type": "Berm"})
-                current_W, current_L = W_next_crest, L_next_crest
+                current_W, current_L = W_next_crest, current_L
     
     W_TOL_final = current_W; L_TOL_final = current_L; A_TOL_final = W_TOL_final * L_TOL_final
     H_actual_above = current_Z - Hb
 
-    # Outer soil bund above GL approx (for BOQ)
+    # Outer soil bund above GL (for BOQ) - this is the actual soil mound
     W_outer_toe_gl = max(W_GL + 2.0 * m_outer * Hb, 0.0)
     L_outer_toe_gl = max(L_GL + 2.0 * m_outer * Hb, 0.0)
     W_outer_crest_tob = max(W_TOB + 2.0 * bc, 0.0)
     L_outer_crest_tob = max(L_TOB + 2.0 * bc, 0.0)
     V_Outer_Bund = frustum_volume(Hb, W_outer_toe_gl*L_outer_toe_gl, W_outer_crest_tob*L_outer_crest_tob)
-    V_Bund_Soil_Approx = V_Outer_Bund - V_GL_to_TOB 
+    V_Bund_Soil_Approx = V_Outer_Bund # This is the volume of the outer soil bund above GL
+    
+    # Native Soil Excavated (for BOQ) - volume of soil removed to create the pit
+    # This goes from GL width (W_GL) down to the base excavation width at depth D, but for the outer soil profile.
+    W_excav_toe_outer_at_D = max(W_GL + 2.0 * m_excav * D, 0.0) 
+    L_excav_toe_outer_at_D = max(L_GL + 2.0 * m_excav * D, 0.0)
+    V_Native_Soil_Excavated_Approx = frustum_volume(D, W_excav_toe_outer_at_D*L_excav_toe_outer_at_D, W_GL * L_GL)
 
     return {
         "W_Base": W_Base, "L_Base": L_Base, "A_Base": A_Base, "W_GL": W_GL, "L_GL": L_GL, "A_GL": A_GL,
@@ -226,8 +234,10 @@ def compute_bbl_abl(
         "N_berms": len([s for s in abl_sections if s["Type"] == "Berm"]), "m_bund_in": m_bund_in,
         "bc": bc, "m_excav": m_excav, "m_fill": m_fill, "m_outer": m_outer,
         "V_Bund_Soil_Approx": V_Bund_Soil_Approx,
-        "V_Native_Soil_Excavated_Approx": V_Native_Soil_Excavated_Approx, # New metric
-        "W_excav_toe_outer": W_excav_toe_outer, "L_excav_toe_outer": L_excav_toe_outer # For plot
+        "V_Native_Soil_Excavated_Approx": V_Native_Soil_Excavated_Approx,
+        "W_excav_toe_outer_at_D": W_excav_toe_outer_at_D, "L_excav_toe_outer_at_D": L_excav_toe_outer_at_D,
+        "W_outer_toe_gl": W_outer_toe_gl, "L_outer_toe_gl": L_outer_toe_gl,
+        "W_outer_crest_tob": W_outer_crest_tob, "L_outer_crest_tob": L_outer_crest_tob,
     }
 
 
@@ -238,11 +248,21 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
     z0, z1, z2 = -D, 0.0, Hb
     Z_TOL = z2 + bblabl["H_above"]
     
-    # 1. Inner Profile (BBL + ABL)
-    x_in_right = [W_Base / 2.0, W_GL / 2.0, W_TOB / 2.0]
-    z_in_right = [z0, z1, z2]
+    # 1. Inner Profile (BBL + ABL) - This defines the actual landfill waste envelope
+    x_in_right = [W_Base / 2.0] # Start at Base width
+    z_in_right = [z0]
+    
+    # Slope inwards from base to GL
+    x_in_right.append(W_GL / 2.0)
+    z_in_right.append(z1)
+    
+    # Slope inwards from GL to TOB (if Hb > 0)
+    x_in_right.append(W_TOB / 2.0)
+    z_in_right.append(z2)
+    
     # Add ABL steps
     for section in bblabl["abl_sections"]:
+        # The section["W_base"]/2.0 and section["W_top"]/2.0 already represent the half-widths correctly
         x_in_right.append(section["W_base"] / 2.0)
         z_in_right.append(section["Z_base"])
         if section["Type"] in ["Fill", "Fill_Cap"]:
@@ -258,33 +278,24 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
          z_in_right.append(Z_TOL)
     x_in_left = [-x for x in x_in_right]; z_in_left = z_in_right
 
-    # 2. Outer Profile (Excavation & Bund)
+    # 2. Outer Profile (Native Soil Excavation & Outer Bund)
+    # The outer soil profile runs from W_outer_toe_gl (below GL) to W_GL (at GL)
+    # and then from W_GL (at GL) to W_outer_crest_tob (at TOB level)
     
-    # FIX: Excavation Profile - Starts at W_GL/2 (GL) and goes to W_Base/2 (Base)
-    # The native soil profile is not the same as the inner liner profile (unless excavation is vertical)
-    # The actual ground excavation profile goes from the GL footprint (W_GL) down to the outer toe (W_excav_toe_outer)
-    # but the landfill profile only extends to W_Base. The difference is covered by the liner/soil layers.
-
-    # Option A: Plot the inner profile for "Landfill Profile" (Waste + Liner)
-    # The current inner profile already plots this (W_Base/2 @ z0 to W_GL/2 @ z1) - it's the blue line.
-    
-    # Option B: Plot the Outer Profile (Native Soil)
-    # The native soil is cut from W_excav_toe_outer (outer toe) to W_GL (GL) and then filled for the bund from W_GL to W_outer_tob_right.
-    
-    W_excav_toe_outer = bblabl["W_excav_toe_outer"]
-    x_excav_outer_right = [W_excav_toe_outer / 2.0, W_GL / 2.0] # Outer toe to GL
+    x_excav_outer_right = [bblabl["W_excav_toe_outer_at_D"] / 2.0, bblabl["W_GL"] / 2.0] # Outer Excavation from Base to GL
     z_excav_outer_right = [z0, z1]
     
-    x_outer_tob_right = W_TOB / 2.0 + bc # Top of outer bund crest
-    x_bund_outer_right = [W_GL / 2.0, x_outer_tob_right] # GL to outer bund crest
+    x_bund_outer_right = [bblabl["W_GL"] / 2.0, bblabl["W_outer_crest_tob"] / 2.0] # Outer Bund from GL to TOB crest
     z_bund_outer_right = [z1, z2]
     
+    # Plotting outer top bund plateau horizontally
+    x_outer_top_bund_plateau = [-bblabl["W_outer_crest_tob"] / 2.0, bblabl["W_outer_crest_tob"] / 2.0]
+    z_outer_top_bund_plateau = [z2, z2] # At TOB level
+
     x_excav_outer_left = [-x for x in x_excav_outer_right]
     z_excav_outer_left = z_excav_outer_right
     x_bund_outer_left = [-x for x in x_bund_outer_right]
     z_bund_outer_left = z_bund_outer_right
-    
-    x_outer_top_bund_plateau = [-x_outer_tob_right, x_outer_tob_right]
     
     return {
         "x_in_left": x_in_left, "z_in_left": z_in_left, "x_in_right": x_in_right, "z_in_right": z_in_right,
@@ -296,24 +307,26 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
         "x_bund_outer_right": x_bund_outer_right, "z_bund_outer_right": z_bund_outer_right,
         "x_outer_top_bund_plateau": x_outer_top_bund_plateau, "z_outer_top_bund_plateau": [z2, z2],
         "base_area": bblabl["A_Base"], "side_area": 0, "plan_length_equiv": bblabl["L_GL"],
-        "x_max_slope": W_excav_toe_outer / 2.0, "z_min_slope": z0, "z_max_slope": Z_TOL,
+        "x_max_slope": bblabl["W_excav_toe_outer_at_D"] / 2.0, "z_min_slope": z0, "z_max_slope": Z_TOL,
     }
 
 def plot_cross_section(section: dict, title: str = "Cross-Section") -> bytes:
-    # Retained plotting logic
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(section["x_in_left"], section["z_in_left"], marker='o', linestyle='-', color='b', label="Landfill Inner Profile")
     ax.plot(section["x_in_right"], section["z_in_right"], marker='o', linestyle='-', color='b')
     ax.plot(section["x_top_plateau"], section["z_top_plateau"], linestyle='-', color='b')
     ax.plot(section["x_base_plateau"], section["z_base_plateau"], linestyle='-', color='b')
+    
     # Draw outer profile (Native Soil Boundary)
     ax.plot(section["x_excav_outer_right"], section["z_excav_outer_right"], linestyle='-', color='k', label="Outer Profile")
     ax.plot(section["x_bund_outer_right"], section["z_bund_outer_right"], linestyle='-', color='k')
     ax.plot(section["x_excav_outer_left"], section["z_excav_outer_left"], linestyle='-', color='k')
     ax.plot(section["x_bund_outer_left"], section["z_bund_outer_left"], linestyle='-', color='k')
-    ax.plot(section["x_outer_top_bund_plateau"], section["z_outer_top_bund_plateau"], linestyle='-', color='k')
+    ax.plot(section["x_outer_top_bund_plateau"], section["z_outer_top_bund_plateau"], linestyle='-', color='k') # Top of outer bund
+    
     ax.axhline(0, color='g', linewidth=1.5, linestyle=':', label="Ground Level (GL)")
-    ax.axhline(section["z_in_right"][2], color='r', linewidth=0.8, linestyle='--', label="Top of Bund (TOB)")
+    ax.axhline(section["z_in_right"][2], color='r', linewidth=0.8, linestyle='--', label="Top of Bund (TOB)") # TOB is at Hb (z2)
+    
     ax.set_xlabel("x (m)"); ax.set_ylabel("z (m)"); ax.set_title(title); ax.grid(True, alpha=0.3)
     ax.legend(loc='upper left'); ax.axis('equal')
     buf = io.BytesIO(); fig.savefig(buf, format="png", bbox_inches="tight", dpi=150); plt.close(fig)
@@ -491,7 +504,7 @@ with stab_tab:
     bishop_compat_section = {
         "x_in_right": section_for_stab["x_in_right"], "z_in_right": section_for_stab["z_in_right"],
         "plan_length_equiv": st.session_state.bblabl["L_GL"],
-        "x_max_slope": st.session_state.bblabl["W_excav_toe_outer"] / 2.0, "z_min_slope": -st.session_state.bblabl["D"],
+        "x_max_slope": st.session_state.bblabl["W_excav_toe_outer_at_D"] / 2.0, "z_min_slope": -st.session_state.bblabl["D"],
         "z_max_slope": st.session_state.bblabl["Hb"] + st.session_state.bblabl["H_above"],
     }
     FoS, best_params, df_slices = grid_search_bishop(bishop_compat_section, stab, n_slices)
