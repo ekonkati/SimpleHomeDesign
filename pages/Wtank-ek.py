@@ -23,6 +23,18 @@ BAR_AREAS = {8: 50.3, 10: 78.5, 12: 113.1, 16: 201.1, 20: 314.2} # mm^2
 st.set_page_config(layout="wide")
 
 # ===============================
+# CUSTOM CSS INJECTION FOR VISIBILITY
+# ===============================
+st.markdown("""
+<style>
+/* Target the input area of the selectbox to give it a visible background */
+div[data-testid="stSelectbox"] div[data-baseweb="select"] {
+    background-color: #f0f2f6; /* Light gray background for visibility */
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ===============================
 # IS 456 Shear Constants 
 # ===============================
 # Simplified from Table 19 (for M25 and M30 interpolation)
@@ -296,7 +308,7 @@ M_H_corner_FL = C_Mx_corner * loads.gamma_w * geom.H**3
 
 st.subheader("2.1 Detailed Narrative on Coefficient Evaluation")
 st.markdown("""
-The coefficients are evaluated based on **IS 3370 (Part 4)**, which treats the wall as a **rectangular plate fixed at the base and continuous/fixed at the vertical corners**, subjected to triangular hydrostatic pressure ($P_w = \gamma_w z$).
+The coefficients are evaluated based on **IS 3370 (Part 4)**, which treats the wall as a **rectangular plate fixed at the base and continuous/fixed at the vertical corners**, subjected to triangular hydrostatic pressure ($P_w = \\gamma_w z$).
 * **Vertical Moment Coefficients ($C_{My}$):** These determine the vertical moment ($M_{My}$) at the fixed base per unit width of the wall. The wall is considered fixed along its **vertical span $H$ (at the base)** and partially restrained horizontally by the adjacent walls/corners. The moment is calculated as:
     $$\\mathbf{M_{My}} = C_{My} \\cdot \\gamma_w \\cdot H^3$$
     $C_{My, corner}$ is the maximum moment near the vertical corner, and $C_{My, mid}$ is the moment at the horizontal mid-span of the wall.
@@ -306,7 +318,7 @@ The coefficients are evaluated based on **IS 3370 (Part 4)**, which treats the w
     $$\\mathbf{M_{Mx}} = C_{Mx} \\cdot \\gamma_w \\cdot H^3$$
 """)
 
-st.subheader("2.2 Unfactored Design Forces ($\\text{Load Factor}=1.0$)")
+st.subheader("2.2 Unfactored Design Forces (Load Factor$=1.0$)")
 col_f1, col_f2 = st.columns(2)
 with col_f1:
     st.markdown(f"Max Vertical Moment ($M_{{My, corner}}$): **{M_base_corner_FL:.2f} kNm/m**")
@@ -324,7 +336,7 @@ st.header("3. Wall Reinforcement Design")
 
 # --- VERTICAL REINFORCEMENT DESIGN ---
 st.subheader("3.1 Vertical Reinforcement ($M_{My}$ and Shear Check)")
-st.markdown(f"Minimum steel area per face is $A_{{st, min}} = **{Ast_min_face:.0f} \\text{{ mm}}^2/\\text{{m}}$** ($\rho_{{min}} = {Ast_min_perc/2.0:.2f}\%$).")
+st.markdown(f"Minimum steel area per face is $A_{{st, min}} = **{Ast_min_face:.0f} \\text{{ mm}}^2/\\text{{m}}$** ($\\rho_{{min}} = {Ast_min_perc/2.0:.2f}\\%$).")
 
 # Moment Requirements
 Mu_inner_tension = gamma_f * M_base_corner_FL 
@@ -342,14 +354,14 @@ with col_req_v:
 # --- User Selection for Vertical Steel (Inner/Outer) ---
 with col_in:
     st.markdown("##### Inner Face Selection")
-    dia_v_in = st.selectbox("Bar $\phi$ (Vertical Inner)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_v_in")
+    dia_v_in = st.selectbox("Bar $\\phi$ (Vertical Inner)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_v_in")
     s_v_in = st.selectbox("Spacing $s$ (mm c/c) Inner", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_v_in")
     Ast_prov_v_in = calc_Ast_prov(dia_v_in, s_v_in)
     pass_in = '✅ PASS' if Ast_prov_v_in >= Ast_req_V_inner else '❌ FAIL'
     st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_v_in:.0f} $\\text{{mm}}^2/\\text{{m}}$** $\\rightarrow$ **{pass_in}**")
 with col_out:
     st.markdown("##### Outer Face Selection")
-    dia_v_out = st.selectbox("Bar $\phi$ (Vertical Outer)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_v_out")
+    dia_v_out = st.selectbox("Bar $\\phi$ (Vertical Outer)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_v_out")
     s_v_out = st.selectbox("Spacing $s$ (mm c/c) Outer", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_v_out")
     Ast_prov_v_out = calc_Ast_prov(dia_v_out, s_v_out)
     pass_out = '✅ PASS' if Ast_prov_v_out >= Ast_req_V_outer else '❌ FAIL'
@@ -398,14 +410,14 @@ st.markdown(f"**$A_{{st, req}}$ (Outer Face):** **{Ast_req_H_outer:.0f} $\\text{
 col_req_h, col_h_in, col_h_out = st.columns(3)
 with col_h_in:
     st.markdown("##### Inner Face Selection")
-    dia_h_in = st.selectbox("Bar $\phi$ (Horiz. Inner)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_h_in")
+    dia_h_in = st.selectbox("Bar $\\phi$ (Horiz. Inner)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_h_in")
     s_h_in = st.selectbox("Spacing $s$ (mm c/c) Horiz. Inner", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_h_in")
     Ast_prov_h_in = calc_Ast_prov(dia_h_in, s_h_in)
     pass_h_in = '✅ PASS' if Ast_prov_h_in >= Ast_req_H_inner else '❌ FAIL'
     st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_h_in:.0f} $\\text{{mm}}^2/\\text{{m}}$** $\\rightarrow$ **{pass_h_in}**")
 with col_h_out:
     st.markdown("##### Outer Face Selection")
-    dia_h_out = st.selectbox("Bar $\phi$ (Horiz. Outer)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_h_out")
+    dia_h_out = st.selectbox("Bar $\\phi$ (Horiz. Outer)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_h_out")
     s_h_out = st.selectbox("Spacing $s$ (mm c/c) Horiz. Outer", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_h_out")
     Ast_prov_h_out = calc_Ast_prov(dia_h_out, s_h_out)
     pass_h_out = '✅ PASS' if Ast_prov_h_out >= Ast_req_H_outer else '❌ FAIL'
@@ -492,15 +504,15 @@ st.markdown("##### Base Slab Reinforcement Selection (Bottom Mesh Governs)")
 col_bx, col_by = st.columns(2)
 with col_bx:
     st.markdown("**Bottom Mesh - Parallel to L (Long Span)**")
-    dia_b_x = st.selectbox("Bar $\phi$ ($\\|\\| L$)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_b_x")
-    s_b_x = st.selectbox("Spacing $s$ (mm c/c) ($\\|\\| L$)", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_b_x")
+    dia_b_x = st.selectbox("Bar $\\phi$ ($\\parallel L$)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(12), key="dia_b_x")
+    s_b_x = st.selectbox("Spacing $s$ (mm c/c) ($\\parallel L$)", options=[100, 125, 150, 175, 200, 250, 300], index=1, key="s_b_x")
     Ast_prov_b_x = calc_Ast_prov(dia_b_x, s_b_x)
     pass_bx = '✅ PASS' if Ast_prov_b_x >= Ast_req_parallel_L else '❌ FAIL'
     st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_x:.0f} $\\text{{mm}}^2/\\text{{m}}$** $\\rightarrow$ **{pass_bx}**")
 with col_by:
     st.markdown("**Bottom Mesh - Parallel to B (Short Span)**")
-    dia_b_y = st.selectbox("Bar $\phi$ ($\\|\\| B$)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_b_y")
-    s_b_y = st.selectbox("Spacing $s$ (mm c/c) ($\\|\\| B$)", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_b_y")
+    dia_b_y = st.selectbox("Bar $\\phi$ ($\\parallel B$)", options=list(BAR_AREAS.keys()), index=list(BAR_AREAS.keys()).index(10), key="dia_b_y")
+    s_b_y = st.selectbox("Spacing $s$ (mm c/c) ($\\parallel B$)", options=[100, 125, 150, 175, 200, 250, 300], index=2, key="s_b_y")
     Ast_prov_b_y = calc_Ast_prov(dia_b_y, s_b_y)
     pass_by = '✅ PASS' if Ast_prov_b_y >= Ast_req_parallel_B else '❌ FAIL'
     st.markdown(f"**$A_{{st, prov}}$: {Ast_prov_b_y:.0f} $\\text{{mm}}^2/\\text{{m}}$** $\\rightarrow$ **{pass_by}**")
