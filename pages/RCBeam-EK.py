@@ -79,19 +79,14 @@ def ld_required(fck, fy, bar_dia_mm, deformed=True, tension=True):
     Ld = (bar_dia_mm * fy) / (4.0 * tau_bd)
     return Ld
 
-# ------------------------------------------------------------------
-# RE-INSERTED SHEAR DESIGN FUNCTION (FIXES NAMEERROR)
-# ------------------------------------------------------------------
 def shear_design(Vu_kN_eff, b_mm, d_mm, fck, fy, Ast_mm2):
     tau_v = (Vu_kN_eff * 1e3) / (b_mm * d_mm)
     p_t = 100.0 * Ast_mm2 / (b_mm * d_mm)
     tc = tau_c(fck, p_t)
     tc_max = TAU_C_MAX[min(TAU_C_MAX.keys(), key=lambda k: abs(k - fck))]
     
-    # Required Vus (kN)
     Vus_kN = Vu_kN_eff - tc * b_mm * d_mm / 1e3
     
-    # For initial calculation of min spacing
     phi, legs = 8.0, 2
     Asv_default = legs * math.pi * (phi**2) / 4.0
     s_v_min = (0.87 * fy * Asv_default) / (0.4 * b_mm) 
@@ -102,7 +97,55 @@ def shear_design(Vu_kN_eff, b_mm, d_mm, fck, fy, Ast_mm2):
             "s_v_min_control": min(s_v_min, s_v_max_limit),
             "min_shear_needed": Vus_kN <= 0,
             "d_eff": d_mm}
-# ------------------------------------------------------------------
+
+def get_fsc(fy, d_prime_over_d):
+    # Stress in compression steel (fsc) from IS 456, Table G (simplified interpolation)
+    fsc_vals = {
+        415: [(0.05, 355), (0.10, 353), (0.15, 342), (0.20, 329)],
+        500: [(0.05, 412), (0.10, 395), (0.15, 379), (0.20, 368)]
+    }
+    
+    if d_prime_over_d >= 0.20: return fsc_vals[fy][-1][1]
+    if d_prime_over_d <= 0.05: return fsc_vals[fy][0][1]
+
+    for i in range(len(fsc_vals[fy])-1):
+        d0, f0 = fsc_vals[fy][i]
+        d1, f1 = fsc_vals[fy][i+1]
+        if d0 < d_prime_over_d <= d1:
+            return f0 + (f1 - f0) * (d_prime_over_d - d0) / (d1 - d0)
+    return 300 # Failsafe
+
+def ast_asc_doubly(Mu_kNm, Mu_lim_kNm, fck, fy, d_mm, d_prime_mm):
+    
+    Mu_Nmm = Mu_kNm * 1e6
+    Mu_lim_Nmm = Mu_lim_kNm * 1e6
+    
+    # 1. Moment carried by concrete and Ast_lim
+    Ast_lim = 0.414 * fck * mu_lim_rect(fck, 1000, d_mm, fy) / (fy * 1000) # This is not Ast_lim, but a ratio.
+    # Recalculate Ast_lim accurately
+    k_mulim = 0.138 if fy <= 415 else 0.133
+    Ast_lim = (0.36 * fck * k_mulim * d_mm * sec.b) / (0.87 * fy)
+    
+    # 2. Excess moment carried by Ast2 and Asc
+    delta_Mu_Nmm = Mu_Nmm - Mu_lim_Nmm
+    
+    d_prime_over_d = d_prime_mm / d_mm
+    fsc = get_fsc(fy, d_prime_over_d)
+    
+    # 3. Required Compression Steel (Asc)
+    # Assume reduction in concrete stress (0.446 fck) is ignored for simplicity, 
+    # as is common in practice and conservative for steel.
+    # Asc_req = Delta_Mu / (fsc * (d - d'))
+    Asc_req = delta_Mu_Nmm / (fsc * (d_mm - d_prime_mm))
+
+    # 4. Required Additional Tension Steel (Ast2)
+    # Ast2 = Delta_Mu / (0.87 * fy * (d - d'))
+    Ast2 = delta_Mu_Nmm / (0.87 * fy * (d_mm - d_prime_mm))
+
+    # Total tension steel
+    Ast_total_req = Ast_lim + Ast2
+
+    return Ast_total_req, Asc_req, Ast_lim
 
 # ---------- UI INPUTS (GENERAL) ----------
 
@@ -130,6 +173,7 @@ with colB:
     st.subheader("Materials")
     fck = st.selectbox("Concrete $f_{ck}$ (N/mm²)", [20,25,30,35,40], index=2)
     fy = st.selectbox("Steel $f_y$ (N/mm²)", [415,500], index=1)
+    # Default bar size for Ld check
     t_bar_d_default = st.selectbox("Tension Bar $\phi$ for $L_d$ (mm)", [12,16,20,25,28,32], index=1)
     c_bar_d_default = st.selectbox("Compression Bar $\phi$ for $L_d$ (mm)", [12,16,20,25], index=0)
 
@@ -161,6 +205,7 @@ if action_mode == "Direct design actions":
 mat, sec = Materials(fck,fy), Section(b,D,cover)
 d = sec.d_eff
 L = span
+d_prime_approx = sec.cover + 8.0 + 0.5 * c_bar_d_default # Approx d' for calculation
 
 self_wt = mat.density * (b/1000.0) * (D/1000.0)
 wall_kNpm = wall_density * (wall_thk/1000.0) * wall_h if use_wall and wall_thk>0 and wall_h>0 else 0.0
@@ -192,9 +237,18 @@ else:
     Tu_kNm, Nu_kN = 0.0, 0.0
 
 Mu_lim = mu_lim_rect(mat.fck, sec.b, d, mat.fy)
-Ast_req = ast_singly(Mu_kNm, mat.fy, d)
 Ast_min = (0.85 * b * d) / fy 
 Ast_max = 0.04 * b * D 
+
+# Flexure design for Ast_req and Asc_req
+if Mu_kNm <= Mu_lim:
+    Ast_req = ast_singly(Mu_kNm, mat.fy, d)
+    Asc_req = 0.0
+    Ast_lim_req = Ast_req # Not strictly correct, but used for comparison
+    moment_type = "Singly"
+else:
+    Ast_req, Asc_req, Ast_lim_req = ast_asc_doubly(Mu_kNm, Mu_lim, mat.fck, mat.fy, d, d_prime_approx)
+    moment_type = "Doubly"
 
 Vu_eff_kN = Vu_kN + (1.6 * Tu_kNm * 1000.0 / sec.b) if Tu_kNm > 0 else Vu_kN
 
@@ -205,19 +259,20 @@ st.header("2. Design Calculations and Checks")
 st.markdown("---")
 
 st.subheader("2.1 Load and Factored Action Summary (IS 456: Cl. 18.2)")
-st.write(f"**Section**: $b={int(b)}$ mm, $D={int(D)}$ mm, $d$ (effective depth) $= **{d:.0f}**$ mm.")
+st.write(f"**Section**: $b={int(b)}$ mm, $D={int(D)}$ mm, $d$ (effective depth) $= **{d:.0f}**$ mm. $d'$ (comp. cover) $\\approx **{d_prime_approx:.0f}**$ mm.")
 st.write(f"**Factored UDL ($w_u$)**: **{w_ULS_15:.2f}** kN/m.")
 st.write(f"**Design Moment ($M_u$)**: **{Mu_kNm:.1f} kN·m**. **Design Shear ($V_u$)**: **{Vu_kN:.1f} kN**.")
 st.write(f"**Ultimate Moment Capacity ($M_{{u,lim}}$)**: **{Mu_lim:.1f}** kN·m.")
 
 if Mu_kNm > Mu_lim:
-    st.error("❌ $M_u$ > $M_{{u,lim}}$. **SECTION MUST BE INCREASED IN SIZE.**")
+    st.error(f"❌ $M_u$ ({Mu_kNm:.1f} kN·m) > $M_{{u,lim}}$ ({Mu_lim:.1f} kN·m). **DOUBLY REINFORCED SECTION REQUIRED.**")
 else:
     st.success("✅ Section size is adequate for flexure ($M_u \leq M_{{u,lim}}$).")
-    st.markdown(f"**Required Tension Steel ($A_{{st, req}}$)**: **{Ast_req:.0f}** mm².")
-    st.markdown(f"**Minimum $A_{{st}}$ (Cl 26.5.1.1)**: {Ast_min:.0f} mm². **Maximum $A_{{st}}$ (Cl 26.5.1.2)**: {Ast_max:.0f} mm².")
 
 st.subheader("2.2 Provided Flexural Reinforcement (Tension) $\leftarrow$ Customize Here")
+
+st.markdown(f"**Required Tension Steel ($A_{{st, req}}$)**: **{Ast_req:.0f}** mm².")
+st.markdown(f"**Minimum $A_{{st}}$ (Cl 26.5.1.1)**: {Ast_min:.0f} mm². **Maximum $A_{{st}}$ (Cl 26.5.1.2)**: {Ast_max:.0f} mm².")
 
 col_t1, col_t2 = st.columns(2)
 with col_t1:
@@ -236,8 +291,33 @@ elif Ast_prov < Ast_min:
 elif Ast_prov > Ast_max:
     st.error("❌ $A_{{st, prov}} > A_{{st, max}}$. **SECTION IS OVER-REINFORCED**.")
 else:
-    st.success("✅ Provided Flexural Reinforcement check passed.")
+    st.success("✅ Provided Tension Reinforcement check passed.")
+    
+# --- Compression Reinforcement Check ---
+if moment_type == "Doubly":
+    st.subheader("2.2.5 Provided Flexural Reinforcement (Compression) $\leftarrow$ Customize Here")
 
+    st.markdown(f"**Required Compression Steel ($A_{{sc, req}}$)**: **{Asc_req:.0f}** mm².")
+
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        c_bar_d = st.selectbox("Top Bar $\phi$ (mm)", [12, 16, 20, 25], index=0)
+    with col_c2:
+        c_bar_count = st.number_input("Top Bar Count (Total)", value=max(2, math.ceil(Asc_req / (math.pi*c_bar_d**2/4.0))), min_value=2, step=1)
+
+    Asc_prov = (math.pi*(c_bar_d**2)/4.0) * c_bar_count 
+    st.write(f"**Provided Compression Steel ($A_{{sc, prov}}$)**: **{Asc_prov:.0f}** mm² (from {c_bar_count} $\\times \phi{c_bar_d}$ bars).")
+    
+    if Asc_prov < Asc_req:
+        st.error("❌ $A_{{sc, prov}} < A_{{sc, req}}$. **INCREASE TOP REINFORCEMENT.**")
+    elif Asc_prov > Ast_max:
+        st.error("❌ $A_{{sc, prov}} > A_{{st, max}}$. Compression steel limit violated.")
+    else:
+        st.success("✅ Provided Compression Reinforcement check passed.")
+else:
+    # Use default c_bar_d for Ld and drawing purposes if not doubly reinforced
+    c_bar_d = c_bar_d_default
+    c_bar_count = 2 # Minimum two top bars for stirrups
 
 st.subheader("2.3 Shear Design (IS 456: Cl. 40 & 41)")
 
@@ -268,14 +348,10 @@ with col_s2:
 with col_s3:
     Asv_prov = stirrup_legs * math.pi * (stirrup_d**2) / 4.0
     
-    # Required spacing
     s_v_req_calc = (0.87 * fy * Asv_prov * d) / (Vus_req_kN * 1e3) if Vus_req_kN > 0 else float('inf')
-    # Max spacing for minimum shear steel
     s_v_min_calc = (0.87 * fy * Asv_prov) / (0.4 * b)
-    # Absolute max spacing (300mm or 0.75d)
     s_v_max_abs = min(0.75 * d, 300.0)
 
-    # Controlling spacing is the minimum of required, min steel, and absolute max.
     control_spacing = min(s_v_req_calc, s_v_min_calc, s_v_max_abs)
     
     default_spacing = int(clamp(control_spacing, 50, s_v_max_abs))
@@ -317,7 +393,6 @@ st.write(f"**Required Development Length $L_d$ (Compression)**: **{Ld_comp:.0f}*
 
 if ductile:
     hinge_len_mm = max(2*d, 600)
-    # Using the bar size provided for design (t_bar_d) for the hinge check
     phi_main = max(12, t_bar_d) 
     max_hoop = min(0.25*d, 8*phi_main, 100)
 
@@ -334,23 +409,19 @@ st.markdown("---")
 
 st.subheader("3.1 Factored Bending Moment, Shear Force, and Deflection Diagrams")
 
-# M and V calculations for plotting
 xs = np.linspace(0, L, 50)
 if action_mode == "Derive from loads":
     if support=="Simply Supported": 
-        # Negative for plotting downwards (sagging is positive for beam sign convention)
         M = [-1 * w_ULS_15 * x * (L - x) / 2 for x in xs] 
         V = [w_ULS_15 * (L / 2 - x) for x in xs]
     elif support=="Cantilever":
-        # Positive for plotting upwards (hogging is negative for beam sign convention)
         M = [0.5 * w_ULS_15 * (L - x)**2 for x in xs] 
         V = [w_ULS_15 * (L - x) for x in xs]
-    else: # Continuous: assume hogging at supports and sagging at midspan
-        M = [-1 * w_ULS_15 * x * (L - x) / 8 for x in xs] # Simplified parabolic 
+    else: 
+        M = [-1 * w_ULS_15 * x * (L - x) / 8 for x in xs] 
         V = [w_ULS_15 * (L / 2 - x) for x in xs]
 else:
-    # Use approximate shapes for visualization if direct input is used
-    M = [-Mu_kNm * np.sin(np.pi * x / L) for x in xs] # Sagging always plotted down
+    M = [-Mu_kNm * np.sin(np.pi * x / L) for x in xs] 
     V = [Vu_kN * np.cos(np.pi * x / L) for x in xs] 
 
 
@@ -371,24 +442,20 @@ st.plotly_chart(fig_V, use_container_width=True)
 # Deflection Diagram
 Ec = 5000 * math.sqrt(fck) # N/mm2
 Igross = (b * D**3) / 12 # mm4
-EIkNmm2 = (Ec * 1e-3) * (Igross * 1e-6) # kN.m2 (Placeholder for approximate I)
+EIkNmm2 = (Ec * 1e-3) * (Igross * 1e-6) # kN.m2 
 
 deflection = [0] * len(xs)
 if support=="Simply Supported":
-    w_service_Nmm = w_service * 1000.0 / 1000.0 # kN/m to N/mm
+    w_service_Nmm = w_service * 1000.0 / 1000.0 
     L_mm = L * 1000.0
     for i, x in enumerate(xs):
         x_mm = x * 1000.0
-        # Deflection equation for simply supported beam under UDL (in mm)
-        # Note: Sign is inverted so positive is downward, matching the sag
         deflection[i] = -(w_service_Nmm * x_mm * (L_mm**3 - 2*L_mm*x_mm**2 + x_mm**3)) / (24 * Ec * Igross)
 elif support=="Cantilever":
-    w_service_Nmm = w_service * 1000.0 / 1000.0 # kN/m to N/mm
+    w_service_Nmm = w_service * 1000.0 / 1000.0 
     L_mm = L * 1000.0
     for i, x in enumerate(xs):
         x_mm = x * 1000.0
-        # Deflection equation for cantilever beam under UDL (in mm)
-        # Note: Sign is inverted so positive is downward, matching the sag
         deflection[i] = (w_service_Nmm * x_mm**2 * (6*L_mm**2 - 4*L_mm*x_mm + x_mm**2)) / (24 * Ec * Igross)
 
 dfD = pd.DataFrame({"x": xs, "Deflection (mm)": deflection}).set_index("x")
@@ -409,8 +476,17 @@ if "rebar_df_draw" not in st.session_state:
         # Additional Bottom Steel (Curtailed)
         {"position":"bottom","dia_mm":int(t_bar_d),"count":max(0, t_bar_count-2),"start_m":L/8,"end_m":span-L/8},
         # Top Steel (Continuous)
-        {"position":"top","dia_mm":int(c_bar_d_default),"count":2,"start_m":0.0,"end_m":span},
+        {"position":"top","dia_mm":int(c_bar_d),"count":c_bar_count,"start_m":0.0,"end_m":span},
     ])
+else:
+    # Update default values in case rebar sizes were changed in Section 2.2
+    # This prevents the initial state from sticking if user changed sizes
+    st.session_state.rebar_df_draw = pd.DataFrame([
+        {"position":"bottom","dia_mm":int(t_bar_d),"count":2,"start_m":0.0,"end_m":span},
+        {"position":"bottom","dia_mm":int(t_bar_d),"count":max(0, t_bar_count-2),"start_m":L/8,"end_m":span-L/8},
+        {"position":"top","dia_mm":int(c_bar_d),"count":c_bar_count,"start_m":0.0,"end_m":span},
+    ])
+
 rebar_df_edited = st.data_editor(st.session_state.rebar_df_draw, num_rows="dynamic")
 st.session_state.rebar_df_draw = rebar_df_edited
 
@@ -502,6 +578,7 @@ summary = {
     "span": [L], "support": [support], "b_mm": [b], "D_mm": [D], "d_eff_mm": [d],
     "Mu_kNm": [Mu_kNm], "Vu_kN": [Vu_kN], "Tu_kNm": [Tu_kNm], "Nu_kN": [Nu_kN],
     "Ast_req_mm2": [Ast_req], "Ast_prov_mm2": [Ast_prov],
+    "Asc_req_mm2": [Asc_req], "Asc_prov_mm2": [Asc_prov if moment_type == "Doubly" else 0.0],
     "Shear_Stirrup": [f"{stirrup_legs}-leg $\\phi{stirrup_d}$"],
     "Shear_Spacing_mm": [s_v_prov],
     "Ld_tension_mm": [Ld_tension], "Ld_comp_mm": [Ld_comp],
