@@ -705,6 +705,27 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Error loading file: {e}")
     st.markdown("---")
+    
+    # <--- START: ADDED PRINT BUTTON --->
+    st.header("Print Utility")
+    # Inject HTML button that calls the browser's window.print() function
+    st.markdown('''
+        <button onclick="window.print()" style="
+            width: 100%; 
+            height: 50px; 
+            background-color: #4CAF50; 
+            color: white; 
+            border-radius: 5px; 
+            border: none; 
+            font-size: 16px; 
+            cursor: pointer;
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
+        ">
+        Print Design Screen 🖨️
+        </button>
+    ''', unsafe_allow_html=True)
+    st.markdown("---")
+    # <--- END: ADDED PRINT BUTTON --->
 
 
 # --- Inputs (Now on Main Page) ---
