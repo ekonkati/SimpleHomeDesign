@@ -480,8 +480,8 @@ Ast_req_parallel_B = max(demand_ast_from_M(Mu_base_y, d_eff_b, mat.fy, mat.fck),
 st.markdown(f"""
 - Design ULS Pressure $q_{{u}}$: **{q_design_uls:.1f} $\\text{{kN/m}}^2$** (Using $1.5 \\times$ Total Downward Pressure)
 - $L/B$ Ratio: **{L_ratio:.2f}** $\rightarrow$ Coeff. $\\alpha_{{x}}={alpha_x:.3f}, \\alpha_{{y}}={alpha_y:.3f}$
-- **Moment $M_{{u, x}}$ (Short Span $B$):** **{Mu_base_x:.2f} kNm/m** (Resisted by steel $\\parallel$ to $L$)
-- **Moment $M_{{u, y}}$ (Long Span $L$):** **{Mu_base_y:.2f} kNm/m** (Resisted by steel $\\parallel$ to $B$)
+- **Moment $M_{{u, x}}$ (Moment along Short Span $B$):** **{Mu_base_x:.2f} kNm/m** (Calculated with $\\alpha_x$, resisted by steel $\\parallel$ to **Long Span $L$**).
+- **Moment $M_{{u, y}}$ (Moment along Long Span $L$):** **{Mu_base_y:.2f} kNm/m** (Calculated with $\\alpha_y$, resisted by steel $\\parallel$ to **Short Span $B$**).
 - $A_{{st, min}}$ (Base): **{Ast_min_base:.0f} $\\text{{mm}}^2/\text{{m}}$** (0.12% of total area)
 - **$A_{{st, req}} \\parallel L$:** **{Ast_req_parallel_L:.0f} $\\text{{mm}}^2/\text{{m}}$**
 - **$A_{{st, req}} \\parallel B$:** **{Ast_req_parallel_B:.0f} $\\text{{mm}}^2/\text{{m}}$**
