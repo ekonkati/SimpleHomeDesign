@@ -1,3 +1,4 @@
+# Save this entire content as app.py and run it with 'streamlit run app.py' in a *different* environment.
 import math
 import json
 import base64
