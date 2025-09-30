@@ -125,8 +125,8 @@ with st.sidebar:
     ductile = st.checkbox("Apply IS 13920 checks", value=True)
 
 # Tabs
-tab_inputs, tab_rebar, tab_results, tab_section, tab_ductile = st.tabs([
-    "Inputs","Rebar Layout","Results","Cross‑Section","IS 13920"
+tab_inputs, tab_rebar, tab_results, tab_section, tab_ductile, tab_dxf = st.tabs([
+    "Inputs","Rebar Layout","Results","Cross‑Section","IS 13920","DXF Export"
 ])
 
 with tab_inputs:
@@ -389,4 +389,143 @@ with tab_ductile:
     st.write("Avoid lap splices in hinge regions; if unavoidable, provide closely spaced hoops over splice length.")
     st.write("Provide crossties (α‑ties) for wider beams; ensure anchorage beyond support face ≥ Ld.")
     st.warning("Full IS 13920 design shear based on probable moments and joint checks are not automated here; verify in detailed design.")
+# ---- DXF Export (ezdxf) ----
+with tab_dxf:
+    st.subheader("DXF Export – Cross Section & Longitudinal Elevation")
+    try:
+        import ezdxf
+        import io as _io
+
+        def _agg_bars(df, position):
+            sel = df[df["position"].str.lower()==position]
+            if sel.empty:
+                return []
+            # return flattened list of diameters per bar
+            bars=[]
+            for _,r in sel.groupby("dia_mm")["count"].sum().reset_index().iterrows():
+                bars += [int(r["dia_mm"]) for _ in range(int(r["count"]))]
+            bars.sort(reverse=True)
+            return bars
+
+        def _cross_section_dxf_bytes(b_mm, D_mm, cover_mm, df):
+            doc = ezdxf.new(dxfversion="R2010")
+            # Layers
+            for name,color in [("CONC",7),("REBAR",1),("TEXT",2)]:
+                if name not in doc.layers:
+                    doc.layers.add(name, color=color)
+            msp = doc.modelspace()
+            # Concrete outline
+            msp.add_lwpolyline([(0,0),(b_mm,0),(b_mm,D_mm),(0,D_mm),(0,0)], dxfattribs={"layer":"CONC"})
+            # Stirrup (approx at cover)
+            cc = float(cover_mm)
+            msp.add_lwpolyline([(cc,cc),(b_mm-cc,cc),(b_mm-cc,D_mm-cc),(cc,D_mm-cc),(cc,cc)], dxfattribs={"layer":"REBAR"})
+            # Bars
+            bottom_bars = _agg_bars(df, "bottom")
+            top_bars    = _agg_bars(df, "top")
+            def _place_row(bars, y):
+                if not bars:
+                    return None
+                n = len(bars)
+                if n==1:
+                    xs=[b_mm/2.0]
+                else:
+                    span = b_mm - 2*cc
+                    step = span/(n-1)
+                    xs = [cc + i*step for i in range(n)]
+                for i,phi in enumerate(bars):
+                    r = phi/2.0
+                    msp.add_circle((xs[i], y), r, dxfattribs={"layer":"REBAR"})
+                # leader & text
+                label = "+".join([str(bars.count(d))+f"-Ø{d}" for d in sorted(set(bars), reverse=True)])
+                txt = f"{label} {'bottom' if y< D_mm/2 else 'top'}"
+                tx = b_mm + 60; ty = y + 40
+                msp.add_line((xs[-1], y), (tx-10, ty), dxfattribs={"layer":"TEXT"})
+                msp.add_text(txt, dxfattribs={"height": 25, "layer":"TEXT"}).set_pos((tx, ty))
+            # place rows
+            if bottom_bars:
+                yb = cc + (bottom_bars[0]/2.0)
+                _place_row(bottom_bars, yb)
+            if top_bars:
+                yt = D_mm - cc - (top_bars[0]/2.0)
+                _place_row(top_bars, yt)
+            buf = _io.BytesIO()
+            doc.write(buf)
+            buf.seek(0)
+            return buf.getvalue()
+
+        def _to_abs_len(val, L_m):
+            if val is None:
+                return None
+            try:
+                v = float(val)
+            except Exception:
+                return None
+            if 0.0 <= v <= 1.0:
+                return v * L_m
+            return max(0.0, min(v, L_m))
+
+        def _longitudinal_dxf_bytes(b_mm, D_mm, cover_mm, L_m, df):
+            L_mm = float(L_m) * 1000.0
+            doc = ezdxf.new(dxfversion="R2010")
+            for name,color in [("CONC",7),("REBAR",1),("TEXT",2)]:
+                if name not in doc.layers:
+                    doc.layers.add(name, color=color)
+            msp = doc.modelspace()
+            # Beam outline (thin web in elevation)
+            msp.add_lwpolyline([(0,0),(L_mm,0),(L_mm,D_mm),(0,D_mm),(0,0)], dxfattribs={"layer":"CONC"})
+            # Draw each group as one or two runs
+            for _,r in df.iterrows():
+                try:
+                    dia = float(r.get("dia_mm",16))
+                    cnt = int(r.get("count",1))
+                    pos = str(r.get("position","bottom")).lower()
+                    cont = str(r.get("continuity","continuous")).lower()
+                    s = _to_abs_len(r.get("start_m",0.0), L_m)
+                    e = _to_abs_len(r.get("end_m",None), L_m)
+                except Exception:
+                    continue
+                # y position by layer
+                if pos=="bottom":
+                    y = cover_mm + dia/2.0
+                elif pos=="top":
+                    y = D_mm - cover_mm - dia/2.0
+                else:
+                    y = D_mm/2.0
+                def draw_seg(x0_m, x1_m):
+                    x0 = float(max(0.0, min(x0_m, L_m))) * 1000.0
+                    x1 = float(max(0.0, min(x1_m, L_m))) * 1000.0
+                    if x1 < x0:
+                        x0, x1 = x1, x0
+                    msp.add_line((x0, y), (x1, y), dxfattribs={"layer":"REBAR"})
+                if cont=="continuous" or e is None:
+                    draw_seg(0.0, L_m)
+                elif cont=="end_zones":
+                    ez = e if e is not None else 0.25*L_m
+                    draw_seg(0.0, ez)
+                    draw_seg(L_m - ez, L_m)
+                else:  # curtailed or custom
+                    s0 = 0.0 if s is None else s
+                    e0 = L_m if e is None else e
+                    draw_seg(s0, e0)
+                # label
+                label = f"{cnt}‑Ø{int(dia)} {pos} ({cont})"
+                tx = 20; ty = y + 30
+                msp.add_text(label, dxfattribs={"height": 25, "layer":"TEXT"}).set_pos((tx, ty))
+            buf = _io.BytesIO()
+            doc.write(buf)
+            buf.seek(0)
+            return buf.getvalue()
+
+        # Build and offer downloads
+        df_re = st.session_state.rebar_df.copy()
+        cs_bytes = _cross_section_dxf_bytes(b, D, cover, df_re)
+        lg_bytes = _longitudinal_dxf_bytes(b, D, cover, L, df_re)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button("⬇️ Download DXF – Cross Section", data=cs_bytes, file_name=f"beam_cross_{int(b)}x{int(D)}.dxf", mime="application/dxf")
+        with col2:
+            st.download_button("⬇️ Download DXF – Longitudinal Elevation", data=lg_bytes, file_name=f"beam_longitudinal_{int(L*1000)}mm.dxf", mime="application/dxf")
+        st.caption("DXF units are in millimetres. Import into AutoCAD and scale/annotate as needed.")
+    except Exception as e:
+        st.error("`ezdxf` is not installed. Please add `ezdxf` to your environment (e.g., requirements.txt) and rerun.\n\nError: " + str(e))
 
