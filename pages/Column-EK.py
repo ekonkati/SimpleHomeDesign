@@ -9,7 +9,7 @@ import streamlit as st
 import plotly.graph_objects as go
 
 # -----------------------------
-# 1. CONSTANTS, UTILITIES, and SECTION CLASS
+# 1. CONSTANTS AND UTILITIES (FLAT)
 # -----------------------------
 ES = 200000.0  # MPa
 EPS_CU = 0.0035
@@ -38,30 +38,23 @@ def moment_magnifier(Pu: float, le_mm: float, fck: float, Ic: float, Cm: float =
     if not sway: delta = max(1.0, Cm * delta)
     return float(np.clip(delta, 1.0, 2.5))
 
-class Section:
-    def __init__(self, b: float, D: float, cover: float, bars: List[Tuple[float, float, float]], tie_dia: float = 8.0):
-        self.b = b
-        self.D = D
-        self.cover = cover
-        self.bars = bars
-        self.tie_dia = tie_dia
+def to_json_serializable(state: dict) -> dict:
+    safe_state = {}
+    for key, value in state.items():
+        if isinstance(value, float): safe_state[key] = round(value, 6)
+        elif isinstance(value, np.float64): safe_state[key] = round(float(value), 6)
+        elif isinstance(value, (list, tuple)) and all(isinstance(v, tuple) for v in value): safe_state[key] = [list(item) for item in value]
+        else: safe_state[key] = value
+    return safe_state
 
-    @property
-    def Ag(self) -> float: return self.b * self.D
-    @property
-    def Ic_x(self) -> float: return self.b * self.D**3 / 12.0
-    @property
-    def Ic_y(self) -> float: return self.D * self.b**3 / 12.0
-    @property
-    def rx(self) -> float: return math.sqrt(self.Ic_x / self.Ag)
-    @property
-    def ry(self) -> float: return math.sqrt(self.Ic_y / self.Ag)
-    @property
-    def As_long(self) -> float: return sum(bar_area(dia) for _, _, dia in self.bars)
-
+def get_json_download_link(data_dict: dict, filename: str) -> str:
+    json_str = json.dumps(data_dict, indent=4)
+    b64 = base64.b64encode(json_str.encode()).decode()
+    href = f'<a href="data:file/json;base64,{b64}" download="{filename}">💾 Download State as JSON</a>'
+    return href
 
 # -----------------------------
-# 2. CORE ENGINEERING LOGIC 
+# 2. CORE ENGINEERING LOGIC (FLAT)
 # -----------------------------
 
 def _linspace_points(a: float, c: float, n: int) -> List[float]:
@@ -69,8 +62,10 @@ def _linspace_points(a: float, c: float, n: int) -> List[float]:
     if n == 1: return [a + (c - a) / 2.0]
     return [a + i * (c - a) / (n - 1) for i in range(n)]
 
-def _generate_bar_layout(b: float, D: float, cover: float, n_top: int, n_bot: int, n_left: int, n_right: int, 
-                        dia_top: float, dia_bot: float, dia_side: float) -> List[Tuple[float, float, float]]:
+def _generate_bar_layout(b: float, D: float, cover: float, state: dict) -> List[Tuple[float, float, float]]:
+    n_top, n_bot, n_left, n_right = state["n_top"], state["n_bot"], state["n_left"], state["n_right"]
+    dia_top, dia_bot, dia_side = state["dia_top"], state["dia_bot"], state["dia_side"]
+
     bars_list = []
     corner_dia = max(dia_top, dia_bot, dia_side)
     dx_corner = cover + corner_dia / 2.0
@@ -95,8 +90,8 @@ def _generate_bar_layout(b: float, D: float, cover: float, n_top: int, n_bot: in
             unique_locations[loc] = (x, y, dia)
     return sorted([v for v in unique_locations.values()], key=lambda x: (x[1], x[0]))
 
-def _uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: float, axis: str) -> float:
-    dimension = section.D if axis == 'x' else section.b
+def _uniaxial_capacity_Mu_for_Pu(b: float, D: float, bars: List[Tuple[float, float, float]], fck: float, fy: float, Pu: float, axis: str) -> float:
+    dimension = D if axis == 'x' else b
     
     def forces_and_moment(c: float):
         Cc = 0.36 * fck * dimension * min(c, dimension)
@@ -104,9 +99,9 @@ def _uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: fl
         Mc = Cc * arm_Cc
         Fs, Ms = 0.0, 0.0
         
-        for (x_abs, y_abs, dia) in section.bars:
+        for (x_abs, y_abs, dia) in bars:
             As = bar_area(dia)
-            y = (section.D - y_abs) if axis == 'x' else x_abs 
+            y = (D - y_abs) if axis == 'x' else x_abs 
             
             strain = EPS_CU * (1.0 - (y / max(c, 1e-6)))
             stress = np.clip(ES * strain, -0.87 * fy, 0.87 * fy)
@@ -135,9 +130,9 @@ def _uniaxial_capacity_Mu_for_Pu(section: Section, fck: float, fy: float, Pu: fl
     
     return float(0.5 * (ML + MR))
 
-def biaxial_utilization(section: Section, fck: float, fy: float, Pu: float, Mux_eff: float, Muy_eff: float, alpha: float) -> Tuple[float, float, float]:
-    Mux_lim = _uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='x')
-    Muy_lim = _uniaxial_capacity_Mu_for_Pu(section, fck, fy, Pu, axis='y')
+def biaxial_utilization(b: float, D: float, bars: List[Tuple[float, float, float]], fck: float, fy: float, Pu: float, Mux_eff: float, Muy_eff: float, alpha: float) -> Tuple[float, float, float]:
+    Mux_lim = _uniaxial_capacity_Mu_for_Pu(b, D, bars, fck, fy, Pu, axis='x')
+    Muy_lim = _uniaxial_capacity_Mu_for_Pu(b, D, bars, fck, fy, Pu, axis='y')
     
     Mux_lim = max(Mux_lim, 1e-3) if abs(Mux_eff) > 1e-3 else Mux_lim
     Muy_lim = max(Muy_lim, 1e-3) if abs(Muy_eff) > 1e-3 else Muy_lim
@@ -148,16 +143,15 @@ def biaxial_utilization(section: Section, fck: float, fy: float, Pu: float, Mux_
     return util, Mux_lim, Muy_lim
 
 # ----------------------------
-# 3. PLOTLY AND DATA UTILITY FUNCTIONS 
+# 3. PLOTLY FUNCTIONS (FLAT)
 # ----------------------------
 
-def plotly_cross_section(section: Section) -> go.Figure:
-    b, D, cover = section.b, section.D, section.cover
+def plotly_cross_section(b: float, D: float, cover: float, bars: List[Tuple[float, float, float]]) -> go.Figure:
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, y0=0, x1=b, y1=D, line=dict(color="black", width=2), fillcolor="rgba(240, 240, 240, 0.8)"))
     fig.add_shape(type="rect", x0=cover, y0=cover, x1=b - cover, y1=D - cover, line=dict(color="gray", width=1, dash="dot"), fillcolor="rgba(0,0,0,0)"))
     bar_x, bar_y, bar_size, bar_text = [], [], [], []
-    for x_geom, y_geom, dia in section.bars:
+    for x_geom, y_geom, dia in bars:
         bar_x.append(x_geom); bar_y.append(y_geom); bar_size.append(dia * 2); bar_text.append(f"Ø{dia:.0f} mm ({bar_area(dia):.0f} mm²)")
     fig.add_trace(go.Scatter(x=bar_x, y=bar_y, mode='markers', name='Rebars',
         marker=dict(size=bar_size, sizemode='diameter', color='#0a66c2', line=dict(width=1, color='DarkSlateGrey')),
@@ -165,17 +159,17 @@ def plotly_cross_section(section: Section) -> go.Figure:
     fig.update_layout(title=f"Cross Section (b={b:.0f}, D={D:.0f} mm)", width=400, height=400 * D / b if b != 0 else 400, showlegend=False, hovermode="closest", plot_bgcolor='white', yaxis_scaleanchor="x", yaxis_scaleratio=1)
     return fig
 
-def plot_pm_curve_plotly(section: Section, fck: float, fy: float, Pu: float, Mu_eff: float, axis: str):
-    dimension = section.D if axis == 'x' else section.b
+def plot_pm_curve_plotly(b: float, D: float, bars: List[Tuple[float, float, float]], fck: float, fy: float, Pu: float, Mu_eff: float, axis: str):
+    dimension = D if axis == 'x' else b
     
     def forces_and_moment_for_curve(c: float):
         Cc = 0.36 * fck * dimension * min(c, dimension)
         arm_Cc = 0.5 * dimension - 0.42 * min(c, dimension)
         Mc = Cc * arm_Cc
         Fs, Ms = 0.0, 0.0
-        for (x_abs, y_abs, dia) in section.bars:
+        for (x_abs, y_abs, dia) in bars:
             As = bar_area(dia)
-            y = (section.D - y_abs) if axis == 'x' else x_abs 
+            y = (D - y_abs) if axis == 'x' else x_abs 
             strain = EPS_CU * (1.0 - (y / max(c, 1e-6)))
             stress = np.clip(ES * strain, -0.87 * fy, 0.87 * fy)
             force = stress * As
@@ -196,21 +190,9 @@ def plot_pm_curve_plotly(section: Section, fck: float, fy: float, Pu: float, Mu_
     fig.update_layout(title=f'P–M Capacity Envelope (Axis: {axis.upper()})', xaxis_title='Axial Load P (kN)', yaxis_title=f'Moment M_{axis} (kNm)', hovermode="x unified", margin=dict(l=20, r=20, t=40, b=20), plot_bgcolor='white')
     return fig
 
-# Data management utilities
-def to_json_serializable(state: dict) -> dict:
-    safe_state = {}
-    for key, value in state.items():
-        if isinstance(value, float): safe_state[key] = round(value, 6)
-        elif isinstance(value, np.float64): safe_state[key] = round(float(value), 6)
-        elif isinstance(value, (list, tuple)) and all(isinstance(v, tuple) for v in value): safe_state[key] = [list(item) for item in value]
-        else: safe_state[key] = value
-    return safe_state
-
-def get_json_download_link(data_dict: dict, filename: str) -> str:
-    json_str = json.dumps(data_dict, indent=4)
-    b64 = base64.b64encode(json_str.encode()).decode()
-    href = f'<a href="data:file/json;base64,{b64}" download="{filename}">💾 Download State as JSON</a>'
-    return href
+# ----------------------------
+# 4. MAIN APPLICATION LOGIC
+# ----------------------------
 
 def initialize_state():
     if "state" not in st.session_state:
@@ -224,46 +206,51 @@ def initialize_state():
         }
 
 def recalculate_properties(state):
-    # 1. Geometry and Bar Layout
-    bars_temp = _generate_bar_layout(state["b"], state["D"], state["cover"], state["n_top"], state["n_bot"], state["n_left"], state["n_right"], state["dia_top"], state["dia_bot"], state["dia_side"])
-    section = Section(b=state["b"], D=state["D"], cover=state["cover"], bars=bars_temp, tie_dia=state["tie_dia"])
-    state.update({"As_long": section.As_long, "bars": bars_temp})
+    b, D, cover, fck, fy = state["b"], state["D"], state["cover"], state["fck"], state["fy"]
+    Pu, Mux, Muy, Vu = state["Pu"], state["Mux"], state["Muy"], state["Vu"]
+    lo = state["storey_clear"]
+
+    # 1. Bar Layout
+    bars = _generate_bar_layout(b, D, cover, state)
+    As_long = sum(bar_area(dia) for _, _, dia in bars)
+    state.update({"As_long": As_long, "bars": bars})
+    Ag = b * D
+    Ic_x = b * D**3 / 12.0
+    Ic_y = D * b**3 / 12.0
+    rx = math.sqrt(Ic_x / Ag)
+    ry = math.sqrt(Ic_y / Ag)
 
     # 2. Slenderness & Magnification
     k_factor = effective_length_factor(state["restraint"])
-    le_x, le_y = k_factor * state["storey_clear"], k_factor * state["storey_clear"]
-    lam_x, lam_y = le_x / max(section.rx, 1e-6), le_y / max(section.ry, 1e-6)
+    le_x, le_y = k_factor * lo, k_factor * lo
+    lam_x, lam_y = le_x / max(rx, 1e-6), le_y / max(ry, 1e-6)
     short_x, short_y = lam_x <= 12.0, lam_y <= 12.0
     state.update(dict(le_x=le_x, le_y=le_y, lam_x=lam_x, lam_y=lam_y, short_x=short_x, short_y=short_y, kx=k_factor))
 
-    delta_x = moment_magnifier(state["Pu"], le_x, state["fck"], section.Ic_x, sway=state["sway"]) if not short_x else 1.0
-    delta_y = moment_magnifier(state["Pu"], le_y, state["fck"], section.Ic_y, sway=state["sway"]) if not short_y else 1.0
-    Mux_eff, Muy_eff = state["Mux"] * delta_x, state["Muy"] * delta_y
+    delta_x = moment_magnifier(Pu, le_x, fck, Ic_x, sway=state["sway"]) if not short_x else 1.0
+    delta_y = moment_magnifier(Pu, le_y, fck, Ic_y, sway=state["sway"]) if not short_y else 1.0
+    Mux_eff, Muy_eff = Mux * delta_x, Muy * delta_y
     state.update(dict(Mux_eff=Mux_eff, Muy_eff=Muy_eff, delta_x=delta_x, delta_y=delta_y))
     
     # 3. Biaxial Utilization
-    util, Mux_lim, Muy_lim = biaxial_utilization(section, state["fck"], state["fy"], state["Pu"], Mux_eff, Muy_eff, state["alpha"])
+    util, Mux_lim, Muy_lim = biaxial_utilization(b, D, bars, fck, fy, Pu, Mux_eff, Muy_eff, state["alpha"])
     state.update(dict(Mux_lim=Mux_lim, Muy_lim=Muy_lim, util=util))
 
     # 4. Shear Design
-    max_long_dia = max([bar[2] for bar in state["bars"]], default=16.0)
-    d_eff = state["D"] - (state["cover"] + 0.5 * max_long_dia) 
-    phiN = float(np.clip(1.0 + (state["Pu"] / max(1.0, (0.25 * state["fck"] * section.Ag))), 0.5, 1.5))
-    tau_c = 0.62 * math.sqrt(state["fck"]) / 1.0 
-    Vc = tau_c * state["b"] * d_eff * phiN
-    Vus = max(0.0, state["Vu"] - Vc)
+    max_long_dia = max([bar[2] for bar in bars], default=16.0)
+    d_eff = D - (cover + 0.5 * max_long_dia) 
+    phiN = float(np.clip(1.0 + (Pu / max(1.0, (0.25 * fck * Ag))), 0.5, 1.5))
+    tau_c = 0.62 * math.sqrt(fck) / 1.0 
+    Vc = tau_c * b * d_eff * phiN
+    Vus = max(0.0, Vu - Vc)
     state.update(dict(Vc=Vc, Vus=Vus, phiN=phiN, d_eff=d_eff))
 
     Asv = state["legs"] * bar_area(state["tie_dia"])
-    s_required = (0.87 * state["fy"] * Asv * d_eff) / max(Vus, 1e-6) if Vus > 0 else 300.0
-    s_cap_detailing = min(16.0 * max_long_dia, min(state["b"], state["D"]), 300.0)
+    s_required = (0.87 * fy * Asv * d_eff) / max(Vus, 1e-6) if Vus > 0 else 300.0
+    s_cap_detailing = min(16.0 * max_long_dia, min(b, D), 300.0)
     state.update({"s_required": s_required, "s_cap_detailing": s_cap_detailing, "s_governing_tie": min(s_cap_detailing, s_required)})
     
-    return section
-
-# ----------------------------
-# MAIN APP EXECUTION WRAPPER
-# ----------------------------
+    return b, D, cover, bars, Ag
 
 def main():
     st.set_page_config(page_title="RCC Column (Biaxial) Designer", layout="wide")
@@ -336,7 +323,7 @@ def main():
         state["legs"] = leg_options_map[selected_legs_str]
 
     # --- RUN ALL CALCULATIONS ---
-    section = recalculate_properties(state)
+    b, D, cover, bars, Ag = recalculate_properties(state)
     st.markdown("---")
 
     # --- 3. Slenderness & Moment Check ---
@@ -348,7 +335,7 @@ def main():
         st.metric("Magnified $M_{ux}'$ (kNm)", f"{kNm(state['Mux_eff'])}")
         st.metric("Magnified $M_{uy}'$ (kNm)", f"{kNm(state['Muy_eff'])}")
     with c_plot:
-        st.plotly_chart(plotly_cross_section(section), use_container_width=True)
+        st.plotly_chart(plotly_cross_section(b, D, cover, bars), use_container_width=True)
     st.markdown("---")
 
     # --- 4. Biaxial Interaction ---
@@ -365,8 +352,8 @@ def main():
 
     st.markdown("#### P–M Interaction Curves")
     colx, coly = st.columns(2)
-    with colx: st.plotly_chart(plot_pm_curve_plotly(section, state["fck"], state["fy"], state["Pu"], state["Mux_eff"], 'x'), use_container_width=True)
-    with coly: st.plotly_chart(plot_pm_curve_plotly(section, state["fck"], state["fy"], state["Pu"], state["Muy_eff"], 'y'), use_container_width=True)
+    with colx: st.plotly_chart(plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Mux_eff"], 'x'), use_container_width=True)
+    with coly: st.plotly_chart(plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Muy_eff"], 'y'), use_container_width=True)
     st.markdown("---")
 
     # --- 5. Shear and Tie Detailing ---
@@ -388,11 +375,11 @@ def main():
     # --- 6. Output Summary ---
     st.header("6️⃣ Printable Output Summary")
     As_long = state['As_long']
-    As_min = 0.008 * section.Ag
+    As_min = 0.008 * Ag
     As_governing = max(As_min, As_long * (state.get("util", 1.0) ** (1/state.get("alpha", 1.0))))
 
     out = {
-        "b (mm)": state["b"], "D (mm)": state["D"], "fck (MPa)": state["fck"], "fy (MPa)": state["fy"],
+        "b (mm)": b, "D (mm)": D, "fck (MPa)": state["fck"], "fy (MPa)": state["fy"],
         "Pu (kN)": state["Pu"] / 1e3, "Mux′ (kNm)": kNm(state["Mux_eff"]), "Muy′ (kNm)": kNm(state["Muy_eff"]), "Vu (kN)": state["Vu"] / 1e3,
         "Slenderness λx": f"{state['lam_x']:.1f}", "Magnifier δx": f"{state['delta_x']:.2f}", 
         "Uniaxial Capacity Mux,lim (kNm)": kNm(state["Mux_lim"]),
