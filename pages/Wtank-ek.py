@@ -21,7 +21,7 @@ M_TO_MM = 1000.0
 st.set_page_config(layout="wide")
 
 # ===============================
-# Data Classes
+# Data Classes (Default values added for robust initialization)
 # ===============================
 @dataclass
 class Materials:
@@ -73,30 +73,23 @@ def demand_ast_from_M(Mu_kNm: float, d_eff_mm: float, fy_MPa: float, fck_MPa: fl
     Mu_Nmm = Mu_kNm * KNM_TO_NMM
     b = 1000.0  # mm
     
-    # Check for failure (Mu > Mu_lim)
-    Ru_lim = 0.36 * fck_MPa * b * d_eff_mm**2
-    if Mu_Nmm > Ru_lim:
-        # This typically means thickness is insufficient for the grade/fy
-        return 99999.0 
-    
     try:
         # Ast using IS 456 Annex E formula (rearranged)
-        # Ast = (0.5 * fck / fy) * (1 - sqrt(1 - 4.6 * Mu / (fck * b * d**2))) * b * d
         term_in_sqrt = 1.0 - (4.6 * Mu_Nmm) / (fck_MPa * b * d_eff_mm**2)
         
         if term_in_sqrt < 0:
-            return 99999.0
+            # Moment exceeds Mu_lim, thickness insufficient
+            return 99999.0 
             
         Ast = (0.5 * fck_MPa / fy_MPa) * (1.0 - math.sqrt(term_in_sqrt)) * b * d_eff_mm
         
-        # Ast_min check is done separately
         return max(Ast, 0.0)
     except:
         return 0.0
 
 def steel_stress_sls(Ms_kNm_per_m: float, d_eff_mm: float, As_mm2_per_m: float, Ec_MPa: float) -> float:
     """
-    Calculates steel stress (sigma_s in MPa) using **Elastic Cracked Section Theory** (Working Stress Method basis) for Serviceability Limit State (SLS).
+    Calculates steel stress (sigma_s in MPa) using **Elastic Cracked Section Theory** for Serviceability Limit State (SLS).
     
     Returns: sigma_s in MPa.
     """
@@ -109,14 +102,12 @@ def steel_stress_sls(Ms_kNm_per_m: float, d_eff_mm: float, As_mm2_per_m: float, 
     Ms_Nmm = Ms_kNm_per_m * KNM_TO_NMM
 
     # 1. Find neutral axis depth, n (or x) for a cracked section:
-    # b*n^2/2 = m*Ast*(d-n) -> Quadratic solution for n
     ratio = (m * As_mm2_per_m) / b
     
     try:
-        # n = -ratio + sqrt(ratio^2 + 2 * ratio * d_eff_mm)
         n = -ratio + math.sqrt(ratio**2 + 2 * ratio * d_eff_mm)
     except ValueError:
-        return float('inf') # Should not happen with real numbers
+        return float('inf') 
 
     # 2. Find lever arm, z
     z = d_eff_mm - n/3.0
@@ -131,8 +122,6 @@ def steel_stress_sls(Ms_kNm_per_m: float, d_eff_mm: float, As_mm2_per_m: float, 
 # ===============================
 
 # Moment coefficients 'C' for Wall Bending Moment at Base (Table 4, Case 1, L/H > 2)
-# The code structure assumes a rectangular tank. The table below is for the *moment* at the base.
-# Coefficients for fixed-base cantilever, M_base = C * w * H^2
 M_COEF_TABLE = pd.DataFrame(
     data={
         'L/H': [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0],
@@ -152,7 +141,6 @@ def bilinear_interpolate(ratio: float, df: pd.DataFrame, col: str) -> float:
     if ratio >= idx.max():
         return val.iloc[-1]
         
-    # Find lower and upper bounds
     lower_idx = idx[idx <= ratio].max()
     upper_idx = idx[idx > ratio].min()
     
@@ -179,6 +167,7 @@ def export_inputs(mat: Materials, geom: Geometry, loads: Loads) -> str:
 def import_inputs(json_data: str) -> Tuple[Materials, Geometry, Loads]:
     """Deserializes JSON string into DataClass objects."""
     data = json.loads(json_data)
+    # Ensure all required keys exist before unpacking
     mat = Materials(**data["Materials"])
     geom = Geometry(**data["Geometry"])
     loads = Loads(**data["Loads"])
@@ -204,9 +193,9 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
     y_w = [geom.t_base, geom.t_base, H_total]
     ax.fill(x_w, y_w, 'b', alpha=0.3, label='Water Pressure')
     ax.plot(x_w, y_w, 'b--')
-    ax.text(P_max_w * 1.1, geom.t_base + geom.H/2, f'P_w={P_max_w:.1f} kN/m²', color='b')
-    ax.arrow(P_max_w * 0.5, geom.t_base + R_liq, 0, -R_liq, head_width=0.05, head_length=0.1, fc='b', ec='b')
-    ax.text(P_max_w * 0.5 + 0.1, geom.t_base + R_liq, f'R_w={R_liq:.1f} kN/m', color='b')
+    ax.text(P_max_w * 1.1, geom.t_base + geom.H/2, f'$P_w$={P_max_w:.1f} kN/m²', color='b')
+    ax.arrow(P_max_w * 0.5, geom.t_base + H_total/3, 0, -0.2, head_width=0.05, head_length=0.1, fc='b', ec='b')
+    ax.text(P_max_w * 0.5 + 0.1, geom.t_base + H_total/3 + 0.1, f'$R_w$={R_liq:.1f} kN/m', color='b')
 
     # 3. Earth Pressure (P_soil) - Only for Ground Tank
     if geom.tank_type == "Ground":
@@ -215,49 +204,46 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
         y_s = [0, 0, H_total]
         ax.fill(x_s, y_s, 'brown', alpha=0.3, label='Earth Pressure')
         ax.plot(x_s, y_s, 'brown--')
-        ax.text(-P_max_s * 1.5, H_total/2, f'P_s={P_max_s:.1f} kN/m²', color='brown')
-        ax.arrow(-P_max_s * 0.5, R_soil, 0, -R_soil, head_width=0.05, head_length=0.1, fc='brown', ec='brown')
-        ax.text(-P_max_s * 0.5 - 0.5, R_soil + 0.1, f'R_s={R_soil:.1f} kN/m', color='brown')
+        ax.text(-P_max_s * 1.5, H_total/2, f'$P_s$={P_max_s:.1f} kN/m²', color='brown')
+        ax.arrow(-P_max_s * 0.5, H_total/3, 0, -0.2, head_width=0.05, head_length=0.1, fc='brown', ec='brown')
+        ax.text(-P_max_s * 0.5 - 0.5, H_total/3 + 0.1, f'$R_s$={R_soil:.1f} kN/m', color='brown')
 
     # Formatting
     ax.set_title("Input Load Sketches (Hydrostatic & Earth Pressure)")
     ax.set_xlabel("Pressure (Scaled)")
     ax.set_ylabel("Height (m)")
     ax.set_ylim(-0.2, H_total + 0.5)
-    ax.set_xlim(-abs(P_max_s) * 2, abs(P_max_w) * 2)
+    ax.set_xlim(-max(abs(P_max_s)*2, 1), max(abs(P_max_w)*2, 1))
     ax.grid(True, linestyle='--', alpha=0.6)
     ax.legend(loc='upper right')
     ax.set_aspect('equal', adjustable='box')
     st.pyplot(fig)
 
 
-def plot_results(H: float, t_wall: float, M_base_max: float, V_base_max: float):
+def plot_results(H: float, M_base_max: float, V_base_max: float):
     """Plots the bending moment and shear force diagrams for the wall."""
     
-    # Shear Force (Triangular, max at base)
+    # Shear Force 
     fig_v, ax_v = plt.subplots(figsize=(4, 6))
     ax_v.plot([0, V_base_max, 0], [0, 0, H], 'r-', linewidth=2)
     ax_v.fill([0, V_base_max, 0], [0, 0, H], 'r', alpha=0.2)
     ax_v.plot([0, 0], [0, H], 'k--')
-    ax_v.text(V_base_max * 1.1, 0.05, f'V_max={V_base_max:.1f} kN/m', color='r')
-    ax_v.set_title("Shear Force Diagram (V)")
+    ax_v.text(V_base_max * 1.1, 0.05, f'$V_{{max}}$={V_base_max:.1f} kN/m', color='r')
+    ax_v.set_title("Shear Force Diagram ($V$)")
     ax_v.set_xlabel("Shear (kN/m)")
     ax_v.set_ylabel("Height (m)")
     ax_v.set_ylim(-0.1, H + 0.1)
     ax_v.grid(True, linestyle='--', alpha=0.6)
 
-    # Bending Moment (Max at base, zero at top)
+    # Bending Moment
     fig_m, ax_m = plt.subplots(figsize=(4, 6))
-    
-    # Moment shape is not purely triangular due to plate action, but we plot the max value.
-    # We plot a simplified fixed-base cantilever shape for illustration
     x_m = [0, M_base_max, 0]
     y_m = [0, 0, H]
     ax_m.plot(x_m, y_m, 'b-', linewidth=2)
     ax_m.fill(x_m, y_m, 'b', alpha=0.2)
     ax_m.plot([0, 0], [0, H], 'k--')
-    ax_m.text(M_base_max * 1.1, 0.05, f'M_max={M_base_max:.1f} kNm/m', color='b')
-    ax_m.set_title("Bending Moment Diagram (M)")
+    ax_m.text(M_base_max * 1.1, 0.05, f'$M_{{max}}$={M_base_max:.1f} kNm/m', color='b')
+    ax_m.set_title("Bending Moment Diagram ($M$)")
     ax_m.set_xlabel("Moment (kNm/m)")
     ax_m.set_ylabel("Height (m)")
     ax_m.set_ylim(-0.1, H + 0.1)
@@ -276,20 +262,26 @@ def plot_results(H: float, t_wall: float, M_base_max: float, V_base_max: float):
 st.title("💧 RCC Water Tank Design and Analysis (IS 3370 / IS 456)")
 st.markdown("---")
 
-# Initialize session state for holding input objects
+# --- INITIALIZATION (FIXED LOCATION) ---
+# Initialize session state for holding input objects, ensuring keys exist.
 if 'mat' not in st.session_state:
     st.session_state.mat = Materials()
     st.session_state.geom = Geometry()
     st.session_state.loads = Loads()
     st.session_state.is_imported = False
 
+# Assign local variables from session state immediately after initialization
+mat, geom, loads = st.session_state.mat, st.session_state.geom, st.session_state.loads
+
+
 # --- INPUT & I/O SECTION ---
 st.header("1. Input Data & File Management")
+st.markdown("Use the controls below to **Import** or **Export** the current design parameters (Materials, Geometry, Loads).")
 
 col_io1, col_io2 = st.columns([1, 1])
 
-# Export Button
-export_str = export_inputs(st.session_state.mat, st.session_state.geom, st.session_state.loads)
+# Export Button 
+export_str = export_inputs(mat, geom, loads) # Accessing using local variables which point to session_state
 col_io1.download_button(
     label="💾 Export Inputs (JSON)",
     data=export_str,
@@ -309,61 +301,58 @@ if uploaded_file is not None:
         json_data = uploaded_file.getvalue().decode("utf-8")
         st.session_state.mat, st.session_state.geom, st.session_state.loads = import_inputs(json_data)
         st.session_state.is_imported = True
+        # Re-assign local variables after successful import
+        mat, geom, loads = st.session_state.mat, st.session_state.geom, st.session_state.loads
         st.success("Inputs imported successfully! Please review the inputs below.")
     except Exception as e:
         st.error(f"Error importing file: {e}")
-
-# --- INPUT BLOCKS ---
 
 # Column Layout for Inputs
 col1, col2, col3 = st.columns(3)
 
 with col1:
     st.subheader("Materials (IS 456)")
-    st.session_state.mat.fck = st.number_input("Concrete Grade $f_{ck}$ (MPa)", 25.0, 50.0, st.session_state.mat.fck, 5.0)
-    st.session_state.mat.fy = st.number_input("Steel Grade $f_{y}$ (MPa)", 250.0, 550.0, st.session_state.mat.fy, 50.0)
-    st.session_state.mat.Ec = st.number_input("Concrete E ($E_{c}$) (MPa)", 25000.0, 40000.0, st.session_state.mat.Ec, 1000.0, format="%.0f")
+    mat.fck = st.number_input("Concrete Grade $f_{ck}$ (MPa)", 25.0, 50.0, mat.fck, 5.0, key="mat_fck")
+    mat.fy = st.number_input("Steel Grade $f_{y}$ (MPa)", 250.0, 550.0, mat.fy, 50.0, key="mat_fy")
+    mat.Ec = st.number_input("Concrete E ($E_{c}$) (MPa)", 25000.0, 40000.0, mat.Ec, 1000.0, format="%.0f", key="mat_ec")
     
 with col2:
     st.subheader("Geometry (Wall)")
-    st.session_state.geom.H = st.number_input("Height of Water $H$ (m)", 1.0, 10.0, st.session_state.geom.H, 0.1)
-    st.session_state.geom.L = st.number_input("Long Wall $L$ (m)", 1.0, 20.0, st.session_state.geom.L, 0.1)
-    st.session_state.geom.B = st.number_input("Short Wall $B$ (m)", 1.0, 20.0, st.session_state.geom.B, 0.1)
-    st.session_state.geom.t_wall = st.number_input("Wall Thickness $t_{w}$ (m)", 0.15, 1.0, st.session_state.geom.t_wall, 0.05)
+    geom.H = st.number_input("Height of Water $H$ (m)", 1.0, 10.0, geom.H, 0.1, key="geom_h")
+    geom.L = st.number_input("Long Wall $L$ (m)", 1.0, 20.0, geom.L, 0.1, key="geom_l")
+    geom.B = st.number_input("Short Wall $B$ (m)", 1.0, 20.0, geom.B, 0.1, key="geom_b")
+    geom.t_wall = st.number_input("Wall Thickness $t_{w}$ (m)", 0.15, 1.0, geom.t_wall, 0.05, key="geom_tw")
     
 with col3:
     st.subheader("Loads & Environment")
-    st.session_state.geom.tank_type = st.selectbox("Tank Type", ["Ground", "Elevated"], index=0 if st.session_state.geom.tank_type == "Ground" else 1)
-    st.session_state.loads.gamma_w = st.number_input("Water Density $\gamma_{w}$ (kN/m³)", 9.81, 15.0, st.session_state.loads.gamma_w, 0.1)
-    if st.session_state.geom.tank_type == "Ground":
-        st.session_state.loads.gamma_s = st.number_input("Soil Density $\gamma_{s}$ (kN/m³)", 15.0, 25.0, st.session_state.loads.gamma_s, 0.5)
-        st.session_state.loads.K0 = st.number_input("Earth Pressure Coeff. $K_{0}$", 0.3, 1.0, st.session_state.loads.K0, 0.05)
-    st.session_state.loads.z_g_zone = st.selectbox("Seismic Zone (IS 1893-2)", [2, 3, 4, 5], index=st.session_state.loads.z_g_zone-2)
-
-# Global variables from session state
-mat, geom, loads = st.session_state.mat, st.session_state.geom, st.session_state.loads
+    geom.tank_type = st.selectbox("Tank Type", ["Ground", "Elevated"], index=0 if geom.tank_type == "Ground" else 1, key="geom_type")
+    loads.gamma_w = st.number_input("Water Density $\gamma_{w}$ (kN/m³)", 9.81, 15.0, loads.gamma_w, 0.1, key="load_gw")
+    if geom.tank_type == "Ground":
+        loads.gamma_s = st.number_input("Soil Density $\gamma_{s}$ (kN/m³)", 15.0, 25.0, loads.gamma_s, 0.5, key="load_gs")
+        loads.K0 = st.number_input("Earth Pressure Coeff. $K_{0}$", 0.3, 1.0, loads.K0, 0.05, key="load_k0")
+    loads.z_g_zone = st.selectbox("Seismic Zone (IS 1893-2)", [2, 3, 4, 5], index=loads.z_g_zone-2 if loads.z_g_zone in [2,3,4,5] else 1, key="load_zone")
 
 # Derived geometric properties
 L_over_H = geom.L / geom.H if geom.H > 0 else 99.0
 tw_mm = geom.t_wall * M_TO_MM
-d_eff = tw_mm - 50.0 # Effective depth (approx t - 50mm cover/rebar)
+# Conservative effective depth (approx t - 50mm cover/rebar for one face)
+d_eff = tw_mm - 50.0 
 
 st.markdown("---")
 
 # --- LOAD CALCULATION SECTION ---
 st.header("2. Basic Load Calculations and Sketches")
-st.markdown(f"The analysis is based on a **fixed base wall** and accounts for lateral loads due to water (Hydrostatic) and, if a ground tank, soil (Earth Pressure). The aspect ratio $\\frac{{L}}{{H}} = \\frac{{{geom.L}}}{{{geom.H}}} = **{L_over_H:.2f}**$ is critical for determining plate action coefficients.")
+st.markdown(f"The analysis is based on a **fixed base wall** acting as a plate element. The aspect ratio $\\frac{{L}}{{H}} = \\frac{{{geom.L}}}{{{geom.H}}} = **{L_over_H:.2f}**$ is used to determine plate bending coefficients (IS 3370-4).")
 
 # 2.1 Hydrostatic Load (FL)
 st.subheader("2.1 Hydrostatic Load (Full Tank)")
 R_liq, zbar_liq = triangular_resultant(loads.gamma_w, geom.H)
 P_max_w = loads.gamma_w * geom.H
 st.markdown(f"""
-The hydrostatic pressure is triangular, with maximum pressure $P_{{max, w}}$ at the base:
+The hydrostatic pressure is triangular, with maximum pressure $P_{{max, w}}$ at the base (height $H$):
 $$P_{{max, w}} = \gamma_w \cdot H = {loads.gamma_w:.2f} \cdot {geom.H:.2f} = **{P_max_w:.2f} \text{ kN/m}^2$$
 The total resultant force $R_{{w}}$ per metre run of the wall is:
-$$R_{{w}} = 0.5 \cdot \gamma_w \cdot H^2 = **{R_liq:.2f} \text{ kN/m}$$
-The moment at the base (assuming cantilever) due to this load is $M_{{cantilever}} = R_{{w}} \cdot \frac{{H}}{3} = {R_liq:.2f} \cdot {geom.H/3.0:.2f} = **{R_liq * geom.H/3.0:.2f} \text{ kNm/m}$$.
+$$R_{{w}} = 0.5 \cdot P_{{max, w}} \cdot H = **{R_liq:.2f} \text{ kN/m}$$
 """)
 
 # 2.2 Earth Pressure (EL) - Only for Ground Tanks
@@ -374,14 +363,15 @@ if geom.tank_type == "Ground":
     R_soil, zbar_soil = triangular_resultant(loads.gamma_s * loads.K0, geom.H + geom.t_base)
     M_soil_base = R_soil * zbar_soil
     st.markdown(f"""
-    For the Ground Tank, the soil exerts a lateral force with $K_0$:
+    For the Ground Tank, the soil exerts a lateral force defined by the earth pressure at rest coefficient $K_0$:
     $$P_{{max, s}} = \gamma_s \cdot K_0 \cdot (H + t_{{base}}) = {loads.gamma_s:.1f} \cdot {loads.K0:.2f} \cdot ({geom.H:.2f} + {geom.t_base:.2f}) = **{P_max_s:.2f} \text{ kN/m}^2$$
-    The total resultant force $R_{{s}}$ per metre run of the wall (acting over $H+t_{{base}}$) is:
+    The total resultant force $R_{{s}}$ per metre run (acting over $H+t_{{base}}$) is:
     $$R_{{s}} = 0.5 \cdot P_{{max, s}} \cdot (H + t_{{base}}) = **{R_soil:.2f} \text{ kN/m}$$
     """)
 
 # 2.3 Load Sketch
 st.subheader("2.3 Load Sketch")
+st.markdown("Schematic representation of the lateral pressures acting on the wall.")
 plot_loads(geom, loads, R_liq, R_soil)
 
 st.markdown("---")
@@ -389,7 +379,8 @@ st.markdown("---")
 # --- MOMENT AND SHEAR CALCULATION SECTION ---
 st.header("3. Wall Moment Calculation (IS 3370-4 Plate Action)")
 st.markdown(f"""
-Since the wall is continuous and connected to the base, it acts as a **plate element** subjected to bending in two directions (vertical and horizontal). The maximum moment at the base is found using coefficients ($C$) from IS 3370-4, Table 4, Case 1. The design moment is $M = C \cdot P_{{max, w}} \cdot H^2$.
+Since the wall is rigidly connected to the base, it acts as a plate. The maximum vertical bending moment at the base, $M_{{base}}$, is found using coefficients ($C$) from **IS 3370-4 (Table 4, Case 1)**.
+$$M_{{base}} = C \cdot \gamma_w \cdot H^3$$
 """)
 
 # Moment Coefficients
@@ -401,44 +392,43 @@ M_base_corner_FL = C_corner * loads.gamma_w * geom.H**3
 M_base_mid_L_FL = C_mid_L * loads.gamma_w * geom.H**3
 M_base_mid_B_FL = C_mid_B * loads.gamma_w * geom.H**3
 
-# Assuming max base shear (V_max) for the wall is due to cantilever action (conservative estimate for V)
+# Max base shear (V_max) is conservatively assumed from the resultant force R_liq
 V_base_FL = R_liq
 
-st.markdown("### 3.1 Base Moments for Full Tank (FL)")
+st.markdown("### 3.1 Unfactored Base Moments for Full Tank (FL)")
 st.markdown(f"**Calculated Aspect Ratio $L/H = {L_over_H:.2f}$**")
 st.markdown(f"Interpolated Coefficients (C): $C_{{corner}}={C_corner:.4f}$, $C_{{mid, L}}={C_mid_L:.4f}$, $C_{{mid, B}}={C_mid_B:.4f}$")
 
 st.markdown(f"""
-- **Corner Moment:** $M_{{corner}} = {C_corner:.4f} \cdot \gamma_w \cdot H^3 = **{M_base_corner_FL:.2f} \text{ kNm/m}$**
-- **Mid-Long Wall Moment:** $M_{{mid, L}} = {C_mid_L:.4f} \cdot \gamma_w \cdot H^3 = **{M_base_mid_L_FL:.2f} \text{ kNm/m}$**
-- **Mid-Short Wall Moment:** $M_{{mid, B}} = {C_mid_B:.4f} \cdot \gamma_w \cdot H^3 = **{M_base_mid_B_FL:.2f} \text{ kNm/m}$**
+- **Maximum Corner Moment:** $M_{{corner}} = **{M_base_corner_FL:.2f} \text{ kNm/m}$**
+- **Mid-Long Wall Moment:** $M_{{mid, L}} = **{M_base_mid_L_FL:.2f} \text{ kNm/m}$**
+- **Mid-Short Wall Moment:** $M_{{mid, B}} = **{M_base_mid_B_FL:.2f} \text{ kNm/m}$**
 """)
 
-# --- LOAD COMBINATION & DESIGN SECTION ---
 st.markdown("---")
-st.header("4. Load Combinations & Ultimate Limit State (ULS) Design")
-st.markdown("Design is checked for two critical scenarios (IS 3370-2, Table 1): **Empty** (Soil/EQ governs) and **Full** (Water/EQ governs). The most critical section is typically the wall base (Maximum Moment).")
+
+# --- LOAD COMBINATION & DESIGN SECTION ---
+st.header("4. Ultimate Limit State (ULS) Design and $A_{st}$ Calculation")
+st.markdown("Design checks are performed for **strength (ULS)** and **serviceability (SLS)**. The maximum vertical moment at the wall base ($M_{{max}}$) governs the reinforcement.")
 
 # Load Factors (Partial Safety Factors, IS 456/IS 3370)
 gamma_f_FL = 1.5  # Full Load (Water) for ULS
 gamma_f_EL = 1.5  # Empty Load (Soil) for ULS
-gamma_f_WL_EL = 1.5 # Seismic Load Factor (IS 1893)
 
-# Case 1: Full Tank (FL) + Seismic
-Mu_design_FL = gamma_f_FL * M_base_corner_FL # Max Water Moment at Corner
+# Case 1: Full Tank (FL)
+Mu_design_FL = gamma_f_FL * M_base_corner_FL 
 
-# Case 2: Empty Tank (EL) + Soil + Seismic (M_soil is generally smaller, but must be checked)
-# Assuming M_soil < M_water, but check is necessary if a ground tank.
+# Case 2: Empty Tank (EL) + Soil
 Mu_design_EL = 0.0
 if geom.tank_type == "Ground":
     Mu_design_EL = gamma_f_EL * M_soil_base
 
+# Final ULS Design values
 Mu_max_design = max(Mu_design_FL, Mu_design_EL) if geom.tank_type == "Ground" else Mu_design_FL
 V_max_design = gamma_f_FL * V_base_FL
 
-st.subheader(f"4.1 Design Moment and Shear")
-st.markdown(f"Maximum Design ULS Moment ($M_u$) $\\approx **{Mu_max_design:.2f} \text{ kNm/m}$** (Governed by {('Empty/Soil' if Mu_design_EL > Mu_design_FL else 'Full/Water')}).")
-st.markdown(f"Maximum Design ULS Shear ($V_u$) $\\approx **{V_max_design:.2f} \text{ kN/m}$**.")
+st.subheader(f"4.1 ULS Design Moment and Shear")
+st.markdown(f"The maximum ULS Design Moment ($M_u$) is $\\approx **{Mu_max_design:.2f} \text{ kNm/m}$** (Governed by {('Empty/Soil' if Mu_design_EL > Mu_design_FL else 'Full/Water')} Condition).")
 
 # 4.2 Required Steel Area (ULS Check)
 Ast_req_ULS = demand_ast_from_M(Mu_max_design, d_eff, mat.fy, mat.fck)
@@ -449,14 +439,14 @@ if geom.t_wall < 0.20:
 # Minimum Ast check (IS 3370 Cl 7.1)
 A_conc_total = 1000.0 * tw_mm # mm²/m
 Ast_min_total = (Ast_min_perc / 100.0) * A_conc_total # Total Ast (both faces)
-Ast_min_face = Ast_min_total / 2.0 # Minimum Ast per face
+Ast_min_face = Ast_min_total / 2.0 # Minimum Ast per face, assumed split equally
 
 Ast_req_final = max(Ast_req_ULS, Ast_min_face)
 
-st.subheader("4.2 Required Vertical Reinforcement (Tension Face)")
+st.subheader("4.2 Vertical Reinforcement Requirement")
 st.markdown(f"""
-- Required $A_{{st}}$ from ULS Flexure ($M_u$) is: **{Ast_req_ULS:.0f} $\text{mm}^2/\text{m}$**
-- Minimum $A_{{st}}$ (IS 3370, {Ast_min_perc:.2f}% total $\rightarrow$ {Ast_min_face:.0f} $\text{mm}^2/\text{m}$ per face): **{Ast_min_face:.0f} $\text{mm}^2/\text{m}$**
+- Required $A_{{st}}$ from ULS Flexure ($M_u$): **{Ast_req_ULS:.0f} $\text{mm}^2/\text{m}$**
+- Minimum $A_{{st}}$ (IS 3370, {Ast_min_perc:.2f}% total): **{Ast_min_face:.0f} $\text{mm}^2/\text{m}$** (per face)
 
 **Governing $A_{{st, req}}$ (Vertical) = {Ast_req_final:.0f} $\text{mm}^2/\text{m}$**
 """)
@@ -465,69 +455,50 @@ st.markdown("---")
 
 # --- SERVICEABILITY LIMIT STATE (SLS) CHECK SECTION ---
 st.header("5. Serviceability Limit State (SLS) - Crack Control")
-st.markdown("SLS checks are performed for unfactored loads, ensuring the wall remains essentially uncracked to maintain water-tightness (IS 3370-2, Cl 3.1). The permissible steel stress ($\sigma_s$) is the limit.")
+st.markdown("Per **IS 3370-2 (Cl 3.1)**, the steel stress ($\sigma_s$) under unfactored service loads must be limited to prevent cracking, ensuring water-tightness. We use **Elastic Cracked Section Analysis** to find the actual stress.")
 
-# Permissible Steel Stress (IS 3370-2, Table 2 & 3)
-# We assume "Severe" Exposure and M30 concrete
-# IS 3370-2 Table 3: Max sigma_s for w_lim = 0.2 mm (Moderate exposure) is 130 MPa for Fe415 and < 16mm bars
-# IS 3370-2 Table 2: sigma_s,max for fck 30, fy 415: 125 MPa (for direct tension)
-# For Flexure (Cl 3.1): Use the max permissible stress from the relevant table. We conservatively use 130 MPa.
-sigma_allow = 130.0 # MPa (Permissible tensile stress in steel for w_lim=0.2mm, Fe415 - Cl 3.1)
+# Permissible Steel Stress (IS 3370-2, Table 3 - For w_lim=0.2mm, Fe415)
+sigma_allow = 130.0 # MPa (for bars <= 16mm) or 100 MPa (for bars > 16mm) - Assuming 16mm bars for this check
 
-# Assume M12 @ 150mm c/c (Ast_prov = 754 mm²/m) or M16 @ 150mm c/c (Ast_prov = 1340 mm²/m)
-Ast_prov_mm2 = Ast_req_final # Use the required Ast for the check (worst case)
-if Ast_req_final > 1340: # If high Ast is required, use a higher bar size for the check
-    Ast_prov_mm2 = 1340.0 # M16 @ 150 c/c
+# Provided Ast for Check: Use the calculated required Ast, but limit it for bar size assumption
+Ast_prov_mm2 = Ast_req_final
+if Ast_req_final > 1340: # M16 @ 150 c/c = 1340 mm2/m
+    sigma_allow = 100.0 # Reduce allowance if Ast is very high, suggesting larger bars might be needed.
 
 # Service Moment (Unfactored)
-Ms_design = M_base_corner_FL # Unfactored Water Moment (FL)
+Ms_design = M_base_corner_FL 
 
 # Calculate Actual Steel Stress (sigma_s)
 sigma_s_actual = steel_stress_sls(Ms_design, d_eff, Ast_prov_mm2, mat.Ec)
 
-st.subheader("5.1 Check for Stress-Induced Cracking")
+st.subheader("5.1 Stress Check for Water-Tightness")
 st.markdown(f"""
 - **Service Moment ($M_s$)** (Unfactored FL): **{Ms_design:.2f} $\text{kNm/m}$**
-- **Provided $A_{{st}}$** (Used for Check): **{Ast_prov_mm2:.0f} $\text{mm}^2/\text{m}$** (E.g., M16 @ 150mm)
-- **Permissible $\sigma_{{s, allow}}$** (IS 3370-2 Cl 3.1): **{sigma_allow:.0f} $\text{MPa}$**
+- **Provided $A_{{st}}$** (Used for Check): **{Ast_prov_mm2:.0f} $\text{mm}^2/\text{m}$**
+- **Permissible $\sigma_{{s, allow}}$** (IS 3370-2): **{sigma_allow:.0f} $\text{MPa}$** (Assuming max bar dia $\le 16 \text{ mm}$)
 
 **Calculated $\sigma_{{s, actual}}$ = {sigma_s_actual:.0f} $\text{MPa}$**
 
-**Result: $\sigma_{{s, actual}}$ {'≤' if sigma_s_actual <= sigma_allow else '>'} $\sigma_{{s, allow}}$ $\rightarrow$ {'✅ PASS (Crack width controlled)' if sigma_s_actual <= sigma_allow else '❌ FAIL (Increase $t_{{w}}$ or $A_{{st}}$)'}**
+**Result: $\sigma_{{s, actual}}$ {'≤' if sigma_s_actual <= sigma_allow else '>'} $\sigma_{{s, allow}}$ $\rightarrow$ **{'**✅ PASS** (Crack width controlled)' if sigma_s_actual <= sigma_allow else '**❌ FAIL** (Increase $t_{{w}}$ or $A_{{st}}$)'}**
 """)
 
 st.markdown("---")
 
 # --- DETAILING & DRAWING SECTION ---
-st.header("6. Detailing, Curtailment, and Output Drawings")
+st.header("6. Output Drawings and Detailing Suggestions")
 
-st.subheader("6.1 Design Output Drawings")
-st.markdown("The moment and shear diagrams illustrate the distribution along the wall height, normalized to the base maximum values.")
-plot_results(geom.H, geom.t_wall, Mu_max_design / gamma_f_FL, V_base_FL)
+st.subheader("6.1 Design Output Diagrams")
+st.markdown("The following diagrams show the distribution of the design moments and shear forces along the wall height ($H$).")
+plot_results(geom.H, Mu_max_design / gamma_f_FL, V_base_FL)
 
-st.subheader("6.2 Vertical Rebar Curtailment Suggestions")
-st.markdown("""
-For tall walls where bending moment is significant at the base and reduces rapidly towards the top (as shown in the moment diagram):
-1.  **Curtailment Point:** The bending moment $M(z)$ along the height $H$ follows a curve, generally dropping to zero at the top. The first bar curtailment can typically occur at $0.3H$ to $0.4H$ from the base, where $A_{st, req}$ drops below $A_{st, min}$.
-2.  **Lapping/Cut-off:** At the curtailment point, the required main steel (governed by $M_{max}$) can be cut off or reduced, ensuring the remaining steel meets the minimum $A_{st, min}$ requirement plus the necessary development length ($L_d$).
-3.  **Minimum Steel Zone:** The upper section of the wall (e.g., above $0.4H$) should be reinforced with the minimum required $A_{st}$ for both faces (0.25% to 0.35% total area, depending on thickness) to control temperature and shrinkage cracks.
-4.  **Distribution Steel (Horizontal):** Horizontal steel is primarily designed for hoop tension (for circular tanks) or horizontal plate bending (for rectangular tanks, typically minimum steel throughout, plus tension if free from adjacent wall). For rectangular tanks, minimum steel is often sufficient for the top $0.6H$.
+st.subheader("6.2 Rebar Reduction and Curtailment Suggestions")
+st.markdown(f"""
+For a wall height $H = {geom.H:.1f} \text{ m}$, the vertical bending moment is maximum at the base and zero at the top. The required steel area $A_{{st}}$ decreases rapidly away from the base.
+
+1.  **Curtailment Point:** The moment reduction means that the main tension reinforcement (designed for $M_u$) can be reduced or cut off where the moment $M(z)$ requires an $A_{{st}} < A_{{st, prov, upper}}$. A common practice is to allow a reduction in $A_{{st}}$ at a height of **$0.3H$ to $0.4H$** from the base, provided the remaining steel satisfies $A_{{st, min}}$ and sufficient development length ($L_d$) is provided beyond the theoretical cut-off point.
+    * *Suggestion:* Consider curtailing **half of the main bars** at approximately **$0.4 \times {geom.H} \approx {0.4*geom.H:.2f} \text{ m}$** from the base.
+
+2.  **Upper Zone Steel:** The top portion of the wall (e.g., above $0.6H$) is primarily subjected to $A_{{st, min}}$ due to temperature and shrinkage effects. The minimum steel **$A_{{st, min, face}} = {Ast_min_face:.0f} \text{ mm}^2/\text{m}$** should be maintained vertically and horizontally on both faces throughout this region.
+
+3.  **Horizontal Steel:** Horizontal steel is crucial for resisting hoop tension (at the base for plate action) and controlling temperature/shrinkage cracks. It should not be curtailed based on the vertical moment diagram; it should generally be held at **$A_{{st, min}}$ or greater** across the entire wall height and faces.
 """)
-
-st.subheader("6.3 Summary of Key Design Values")
-data = {
-    "Parameter": ["Wall Thickness", "Effective Depth", "L/H Ratio", "Max Design Moment ($M_u$)", "Required $A_{st}$ (Vert.)", "Provided $\\sigma_{s, actual}$", "Allowable $\\sigma_{s, allow}$"],
-    "Value": [
-        f"{geom.t_wall * 1000:.0f} mm",
-        f"{d_eff:.0f} mm",
-        f"{L_over_H:.2f}",
-        f"{Mu_max_design:.2f} kNm/m",
-        f"{Ast_req_final:.0f} mm²/m",
-        f"{sigma_s_actual:.0f} MPa",
-        f"{sigma_allow:.0f} MPa"
-    ],
-    "Result": ["-", "-", "-", "-", "-", "-", "SLS " + ('PASS' if sigma_s_actual <= sigma_allow else 'FAIL')]
-}
-st.table(pd.DataFrame(data))
-
-# End of code
