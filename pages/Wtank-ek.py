@@ -20,6 +20,10 @@ M_TO_MM = 1000.0
 # Set Streamlit page configuration for wide layout
 st.set_page_config(layout="wide")
 
+# Enable LaTeX rendering for Matplotlib texts
+plt.rcParams['text.usetex'] = False # Set to False for standard Streamlit/Matplotlib environments
+plt.rcParams['mathtext.fontset'] = 'cm'
+
 # ===============================
 # Data Classes (Default values added)
 # ===============================
@@ -152,54 +156,105 @@ def import_inputs(json_data: str) -> Tuple[Materials, Geometry, Loads]:
     return mat, geom, loads
 
 # ===============================
-# Plotting Functions (CORRECTED)
+# Plotting Functions (CORRECTED AND ENHANCED)
 # ===============================
 
 def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
-    """Plots the load diagram (Hydrostatic and Earth Pressure)."""
-    fig, ax = plt.subplots(figsize=(8, 4))
+    """Plots the load diagram (Hydrostatic and Earth Pressure) with enhanced scaling and formatting."""
     
-    H_total = geom.H + geom.t_base
+    # ----------------------------------------------------
+    # 1. Setup and Dimensions
+    # ----------------------------------------------------
+    fig, ax = plt.subplots(figsize=(8, 6)) # Increased height for better aspect ratio
+    
+    H_wall = geom.H
+    t_base = geom.t_base
+    H_total = H_wall + t_base
+    
+    # Pressures
+    P_max_w = loads.gamma_w * H_wall
     P_max_s = 0
 
-    # 1. Wall and Base
-    ax.plot([0, 0], [0, H_total], 'k-', linewidth=3, label='Wall')
-    ax.plot([-0.5, 1], [0, 0], 'k-', linewidth=3, label='Base')
+    # ----------------------------------------------------
+    # 2. Draw the Wall and Base Geometry (Profile View)
+    # ----------------------------------------------------
     
-    # 2. Hydrostatic Pressure (P_w)
-    P_max_w = loads.gamma_w * geom.H
+    # Draw Wall Profile
+    ax.plot([0, 0], [0, H_total], color='k', linewidth=3, label='Wall')
+    
+    # Draw Base Slab Profile (extending slightly left for soil load illustration)
+    ax.plot([-0.5, 1], [0, 0], color='k', linewidth=3, label='Base Slab')
+    ax.plot([-0.5, 0], [t_base, t_base], color='k', linestyle=':', linewidth=1) # Top of base line
+    
+    # Dimensioning the Wall Height H
+    ax.arrow(-0.3, H_total, 0, -H_wall, head_width=0.05, head_length=0.1, fc='gray', ec='gray', length_includes_head=True)
+    ax.text(-0.35, t_base + H_wall / 2, r'$H$', color='gray', ha='right')
+    
+    # Dimensioning the Base Slab Thickness t_base
+    ax.arrow(-0.3, 0.05, 0, t_base - 0.1, head_width=0.05, head_length=0.1, fc='gray', ec='gray', length_includes_head=True)
+    ax.text(-0.35, t_base / 2, r'$t_{base}$', color='gray', ha='right')
+
+    # ----------------------------------------------------
+    # 3. Hydrostatic Pressure (P_w) - Acting on inner face (right)
+    # ----------------------------------------------------
     x_w = [0, P_max_w, 0]
-    y_w = [geom.t_base, geom.t_base, H_total]
-    ax.fill(x_w, y_w, 'b', alpha=0.3, label='Water Pressure')
+    y_w = [t_base, t_base, H_total]
+    ax.fill_betweenx([t_base, H_total], [0, P_max_w], 0, color='b', alpha=0.3, label='Water Pressure')
     ax.plot(x_w, y_w, color='b', linestyle='--') 
     
-    # Corrected text formatting
-    ax.text(P_max_w * 1.05, geom.t_base + geom.H/2, f'$P_w$={P_max_w:.1f} kN/m²', color='b')
-    ax.arrow(P_max_w * 0.5, geom.t_base + H_total/3, 0, -0.2, head_width=0.05, head_length=0.1, fc='b', ec='b')
-    ax.text(P_max_w * 0.5 + 0.1, geom.t_base + H_total/3 + 0.1, f'$R_w$={R_liq:.1f} kN/m', color='b')
+    # Pressure magnitude label (Pmax)
+    ax.text(P_max_w * 1.05, t_base + 0.1, r'$P_{w, \max} = $' + f'{P_max_w:.1f} ' + r' $\text{kN/m}^2$', color='b', fontsize=10)
+    
+    # Resultant force label (R_w)
+    ax.arrow(P_max_w * 0.5, t_base + H_wall/3, -0.05, 0, head_width=0.1, head_length=0.1, fc='b', ec='b')
+    ax.text(P_max_w * 0.5, t_base + H_wall/3 + 0.2, r'$R_w = $' + f'{R_liq:.1f} ' + r' $\text{kN/m}$', color='b', ha='center', fontsize=10)
 
-    # 3. Earth Pressure (P_soil) - Only for Ground Tank
+    # ----------------------------------------------------
+    # 4. Earth Pressure (P_soil) - Acting on outer face (left)
+    # ----------------------------------------------------
     if geom.tank_type == "Ground":
-        P_max_s = loads.gamma_s * loads.K0 * (geom.H + geom.t_base)
+        P_max_s = loads.gamma_s * loads.K0 * H_total
         x_s = [-P_max_s, 0, 0]
         y_s = [0, 0, H_total]
-        ax.fill(x_s, y_s, 'brown', alpha=0.3, label='Earth Pressure')
+        
+        ax.fill_betweenx([0, H_total], [-P_max_s, 0], 0, color='brown', alpha=0.3, label='Earth Pressure')
         ax.plot(x_s, y_s, color='brown', linestyle='--')
         
-        # Corrected text formatting
-        ax.text(-P_max_s * 1.5, H_total/2, f'$P_s$={P_max_s:.1f} kN/m²', color='brown')
-        ax.arrow(-P_max_s * 0.5, H_total/3, 0, -0.2, head_width=0.05, head_length=0.1, fc='brown', ec='brown')
-        ax.text(-P_max_s * 0.5 - 0.5, H_total/3 + 0.1, f'$R_s$={R_soil:.1f} kN/m', color='brown')
+        # Pressure magnitude label (Pmax)
+        ax.text(-P_max_s * 1.05, 0.1, r'$P_{s, \max} = $' + f'{P_max_s:.1f} ' + r' $\text{kN/m}^2$', color='brown', ha='right', fontsize=10)
+        
+        # Resultant force label (R_s)
+        ax.arrow(-P_max_s * 0.5, H_total/3, 0.05, 0, head_width=0.1, head_length=0.1, fc='brown', ec='brown')
+        ax.text(-P_max_s * 0.5, H_total/3 + 0.2, r'$R_s = $' + f'{R_soil:.1f} ' + r' $\text{kN/m}$', color='brown', ha='center', fontsize=10)
 
-    # Formatting
-    ax.set_title("Input Load Sketches (Hydrostatic & Earth Pressure)")
-    ax.set_xlabel("Pressure (Scaled)")
-    ax.set_ylabel("Height (m)")
+    # ----------------------------------------------------
+    # 5. Formatting and Display
+    # ----------------------------------------------------
+    ax.set_title(
+        f"Load Diagram (Wall Profile: L={geom.L:.1f}m, B={geom.B:.1f}m)",
+        fontsize=12, fontweight='bold'
+    )
+    ax.set_xlabel("Pressure (Scaled $\leftarrow$ Soil | Water $\rightarrow$)", fontsize=10)
+    ax.set_ylabel("Height from Base (m)", fontsize=10)
+    
+    # Set limits based on pressures and dimensions
+    x_limit = max(abs(P_max_s), abs(P_max_w)) * 1.5 
+    ax.set_xlim(-x_limit, x_limit)
     ax.set_ylim(-0.2, H_total + 0.5)
-    ax.set_xlim(-max(abs(P_max_s)*2, 1), max(abs(P_max_w)*2, 1))
-    ax.grid(True, linestyle='--', alpha=0.6)
-    ax.legend(loc='upper right')
+    
+    ax.grid(True, linestyle=':', alpha=0.6)
     ax.set_aspect('equal', adjustable='box')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.05), ncol=2, frameon=False)
+    
+    # Hide the y-axis ticks and spines to make the wall itself the central reference
+    ax.yaxis.tick_left()
+    ax.spines['left'].set_position('zero')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    
+    # Set y-tick marks at H and t_base for clarity
+    ax.set_yticks(sorted(list(set([0, t_base, H_total]))))
+
     st.pyplot(fig)
 
 
@@ -211,10 +266,10 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     ax_v.plot([0, V_base_max, 0], [0, 0, H], 'r-', linewidth=2)
     ax_v.fill([0, V_base_max, 0], [0, 0, H], 'r', alpha=0.2)
     ax_v.plot([0, 0], [0, H], 'k--')
-    ax_v.text(V_base_max * 1.1, 0.05, f'$V_{{max}}$={V_base_max:.1f} kN/m', color='r')
-    ax_v.set_title("Shear Force ($V$)")
-    ax_v.set_xlabel("Shear (kN/m)")
-    ax_v.set_ylabel("Height (m)")
+    ax_v.text(V_base_max * 1.1, 0.05, r'$V_{\max} = $' + f'{V_base_max:.1f} ' + r' $\text{kN/m}$', color='r', fontsize=10)
+    ax_v.set_title("Shear Force ($V$)", fontsize=12)
+    ax_v.set_xlabel("Shear (kN/m)", fontsize=10)
+    ax_v.set_ylabel("Height (m)", fontsize=10)
     ax_v.set_ylim(-0.1, H + 0.1)
     ax_v.grid(True, linestyle='--', alpha=0.6)
 
@@ -225,10 +280,10 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     ax_m_L.plot(x_m_L, y_m_L, 'b-', linewidth=2)
     ax_m_L.fill(x_m_L, y_m_L, 'b', alpha=0.2)
     ax_m_L.plot([0, 0], [0, H], 'k--')
-    ax_m_L.text(M_base_L * 1.1, 0.05, f'$M_{{L}}$={M_base_L:.1f} kNm/m', color='b')
-    ax_m_L.set_title("Moment - Long Wall ($M_L$)")
-    ax_m_L.set_xlabel("Moment (kNm/m)")
-    ax_m_L.set_ylabel("Height (m)")
+    ax_m_L.text(M_base_L * 1.1, 0.05, r'$M_{L} = $' + f'{M_base_L:.1f} ' + r' $\text{kNm/m}$', color='b', fontsize=10)
+    ax_m_L.set_title("Moment - Long Wall ($M_L$)", fontsize=12)
+    ax_m_L.set_xlabel("Moment (kNm/m)", fontsize=10)
+    ax_m_L.set_ylabel("Height (m)", fontsize=10)
     ax_m_L.set_ylim(-0.1, H + 0.1)
     ax_m_L.grid(True, linestyle='--', alpha=0.6)
     
@@ -239,10 +294,10 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     ax_m_B.plot(x_m_B, y_m_B, 'g-', linewidth=2)
     ax_m_B.fill(x_m_B, y_m_B, 'g', alpha=0.2)
     ax_m_B.plot([0, 0], [0, H], 'k--')
-    ax_m_B.text(M_base_B * 1.1, 0.05, f'$M_{{B}}$={M_base_B:.1f} kNm/m', color='g')
-    ax_m_B.set_title("Moment - Short Wall ($M_B$)")
-    ax_m_B.set_xlabel("Moment (kNm/m)")
-    ax_m_B.set_ylabel("Height (m)")
+    ax_m_B.text(M_base_B * 1.1, 0.05, r'$M_{B} = $' + f'{M_base_B:.1f} ' + r' $\text{kNm/m}$', color='g', fontsize=10)
+    ax_m_B.set_title("Moment - Short Wall ($M_B$)", fontsize=12)
+    ax_m_B.set_xlabel("Moment (kNm/m)", fontsize=10)
+    ax_m_B.set_ylabel("Height (m)", fontsize=10)
     ax_m_B.set_ylim(-0.1, H + 0.1)
     ax_m_B.grid(True, linestyle='--', alpha=0.6)
 
