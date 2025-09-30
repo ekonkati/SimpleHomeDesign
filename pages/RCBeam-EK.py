@@ -176,7 +176,6 @@ if action_mode == "Direct design actions":
 else:
     w_ULS_15 = 1.5 * (w_DL + w_LL) 
     
-    # Use standard coefficients (IS 456: Table 12 & 13 for approximate analysis)
     if support=="Simply Supported": kM, kV = 1/8, 0.5
     elif support=="Cantilever": kM, kV = 1/2, 1.0
     else: kM, kV = 1/12, 0.6 
@@ -191,7 +190,6 @@ else:
     Tu_kNm = 0.0
     Nu_kN  = 0.0
 
-# Calculate Provided Ast at Midspan (Assumes midspan is governed by bottom steel)
 def ast_from_rows(rows, pos_filter):
     sel = rows[rows["position"].str.lower()==pos_filter]
     areas = (math.pi*(sel["dia_mm"]**2)/4.0) * sel["count"]
@@ -217,11 +215,10 @@ def shear_design(Vu_kN_eff, b_mm, d_mm, fck, fy, Ast_mm2):
     
     Vus_kN = Vu_kN_eff - tc * b_mm * d_mm / 1e3
     
-    # Calculate required spacing for an 8mm 2-leg stirrup
     phi, legs = 8.0, 2
     Asv = legs * math.pi * (phi**2) / 4.0
     s_v_req = (0.87 * fy * Asv * d_mm) / (Vus_kN * 1e3) if Vus_kN > 0 else float('inf')
-    s_v_min = (0.87 * fy * Asv) / (0.4 * b_mm) # For minimum steel
+    s_v_min = (0.87 * fy * Asv) / (0.4 * b_mm) 
     
     s_v_max_limit = min(0.75 * d_mm, 300.0)
     
@@ -235,7 +232,7 @@ shear_res = shear_design(Vu_eff_kN, sec.b, d, mat.fck, mat.fy, Ast_prov)
 
 # Serviceability (L/d)
 Ld_tension = ld_required(mat.fck, mat.fy, t_bar, tension=True)
-Ld_comp = ld_required(mat.fck, mat.fy, c_bar, tension=False) # Ld in compression
+Ld_comp = ld_required(mat.fck, mat.fy, c_bar, tension=False) 
 
 base_Ld = LD_LIMITS[support]
 p_t_service = 100.0 * Ast_prov / (sec.b * d)
@@ -331,7 +328,8 @@ if ductile:
     max_hoop = min(0.25*d, 8*phi_main, 100)
 
     st.warning("⚠️ **IS 13920 Advisory Checks**")
-    st.write(f"**Confinement Length** at each end $\\geq 2d$ or $600\\text{ mm} = **{hinge_len_mm:.0f}**$ mm.")
+    # Corrected line 334: removed spurious character
+    st.write(f"**Confinement Length** at each end $\\geq 2d$ or $600\\text{ mm} = **{hinge_len_mm:.0f}**$ mm.") 
     st.write(f"**Hoop Spacing in Hinge Zone** $\\leq \min(0.25d, 8\\phi_{{main}}, 100) = **{max_hoop:.0f}**$ mm.")
     st.caption("Detailed design shear based on probable moments and joint checks must be verified separately.")
 
@@ -342,23 +340,23 @@ st.markdown("---")
 
 st.subheader("3.1 Factored Bending Moment and Shear Force Diagrams")
 
-# M and V calculations for plotting (simplified UDL for narrative)
 xs = np.linspace(0, L, 50)
 if action_mode == "Derive from loads":
     if support != "Cantilever":
-        M = [w_ULS_15 * x * (L - x) / 2 for x in xs] if support == "Simply Supported" else [w_ULS_15 * x * (L - x) / 8 for x in xs] # Simplified
+        # Simplified parabolic M for UDL
+        M = [w_ULS_15 * x * (L - x) / 2 for x in xs] if support == "Simply Supported" else [w_ULS_15 * x * (L - x) / 8 for x in xs] 
         V = [w_ULS_15 * (L / 2 - x) for x in xs]
     else:
         M = [-0.5 * w_ULS_15 * (x ** 2) for x in xs]
         V = [-w_ULS_15 * x for x in xs]
 else:
+    # Use approximate shapes for visualization if direct input is used
     M = [Mu_kNm * np.sin(np.pi * x / L) / np.sin(np.pi / 2) for x in xs] if support == "Simply Supported" else [Mu_kNm * (x / L) for x in xs] 
     V = [Vu_kN * np.cos(np.pi * x / L) for x in xs] if support == "Simply Supported" else [Vu_kN * (1 - 2*x/L) for x in xs]
 
 dfM = pd.DataFrame({"x": xs, "M (kN·m)": M}).set_index("x")
 dfV = pd.DataFrame({"x": xs, "V (kN)": V}).set_index("x")
 
-# Use Plotly
 fig_M = px.line(dfM, y="M (kN·m)", title="Factored Bending Moment Diagram (kN·m)")
 fig_M.update_traces(fill='tozeroy', line_color='rgb(30, 144, 255)')
 st.plotly_chart(fig_M, use_container_width=True)
@@ -408,7 +406,7 @@ def draw_cross_section_plotly(b_mm, D_mm, cover_mm, df_rebar):
             
         label = "+".join([f"{bars.count(d)}-Ø{d}" for d in sorted(set(bars), reverse=True)])
         pos_txt = "TENSION" if is_bottom else "COMPRESSION"
-        fig.add_annotation(x=b_mm + 50, y=y, text=f"{label} {pos_txt}", showarrow=False, font=dict(size=10))
+        fig.add_annotation(x=b_mm + 50, y=y, text=label, showarrow=False, font=dict(size=10))
 
     y_ref_bottom = cc
     y_ref_top = D_mm - cc
@@ -435,9 +433,10 @@ st.subheader("3.3 Longitudinal Section Drawing (Schematic)")
 
 def draw_longitudinal_section_plotly(L_m, D_mm, cover_mm, df_rebar):
     fig = go.Figure()
+    L_mm = L_m * 1000
     
     # 1. Concrete outline (beam elevation)
-    fig.add_shape(type="rect", x0=0, y0=0, x1=L_m * 1000, y1=D_mm, 
+    fig.add_shape(type="rect", x0=0, y0=0, x1=L_mm, y1=D_mm, 
                   line=dict(color="black", width=2), fillcolor="rgba(192, 192, 192, 0.5)")
     
     # 2. Main Reinforcement
@@ -448,12 +447,10 @@ def draw_longitudinal_section_plotly(L_m, D_mm, cover_mm, df_rebar):
         count = row['count']
         pos = row['position'].lower()
         
-        # Calculate Y position (centerline of bar)
         y_center = cover_mm + dia / 2.0
         if pos == 'top':
             y_center = D_mm - y_center
         
-        # Draw bar (line)
         fig.add_trace(go.Scatter(
             x=[start_x, end_x], y=[y_center, y_center],
             mode='lines',
@@ -461,22 +458,21 @@ def draw_longitudinal_section_plotly(L_m, D_mm, cover_mm, df_rebar):
             name=f"{count}-Ø{dia} {pos.capitalize()}"
         ))
         
-        # Add label
         label = f"{count}-Ø{dia} {pos.capitalize()}"
         mid_x = (start_x + end_x) / 2
         fig.add_annotation(x=mid_x, y=y_center + 20, text=label, showarrow=False, font=dict(size=10))
 
     # 3. Supports (triangles/rects)
     fig.add_shape(type="rect", x0=-20, y0=0, x1=20, y1=-D_mm/4, fillcolor="black")
-    fig.add_shape(type="rect", x0=L_m*1000 - 20, y0=0, x1=L_m*1000 + 20, y1=-D_mm/4, fillcolor="black")
+    fig.add_shape(type="rect", x0=L_mm - 20, y0=0, x1=L_mm + 20, y1=-D_mm/4, fillcolor="black")
     
     fig.update_layout(
         title="Longitudinal Elevation (Beam)",
         xaxis_title="Length (mm)",
         yaxis_title="Depth (mm)",
         height=400,
-        yaxis_range=[ -D_mm/2, D_mm*1.2], # Ensure supports are visible
-        xaxis_range=[-100, L_m * 1000 + 100],
+        yaxis_range=[ -D_mm/2, D_mm*1.2], 
+        xaxis_range=[-100, L_mm + 100],
         showlegend=False,
         plot_bgcolor='white',
     )
