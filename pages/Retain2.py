@@ -1,17 +1,9 @@
-# Retaining Wall Design Wizard (Streamlit)
-# -----------------------------------------------------------
-# Covers L / T / Inverted-L walls. Handles Active/At-Rest/Passive
-# pressures, water, surcharge, optional seismic (MO approx), stability,
-# member design, pressure & load drawings, reinforcement schematic,
-# BOQ, **DXF export (ezdxf)**, **PDF report (reportlab)**,
-# **Shear-key modeling and Passive resistance**.
-# -----------------------------------------------------------
-
 import io
 import math
 from dataclasses import dataclass
 from typing import Dict
 from datetime import datetime
+import json # ADDED for saving/loading state
 
 import numpy as np
 import pandas as pd
@@ -44,6 +36,26 @@ def as_per_m(dia_mm: int, spacing_mm: int) -> float:
         return 0.0
     return (BAR_AREAS[dia_mm] / spacing_mm) * 1000
 
+# NEW FUNCTION: Create a serializable state dictionary for saving
+def create_state_dict(geo, soil, loads, mat, bearing, project_name, wall_type, design_state):
+    """Creates a dictionary of all current inputs for saving."""
+    # Note: geo.B is derived and not in the dataclass until calculated
+    geo_dict = geo.__dict__.copy()
+    if 'B' in geo_dict:
+        del geo_dict['B'] 
+
+    return {
+        'project_name': project_name,
+        'wall_type': wall_type,
+        'design_state': design_state,
+        'geo': geo_dict,
+        'soil': soil.__dict__,
+        'loads': loads.__dict__,
+        'mat': mat.__dict__,
+        'bearing': bearing.__dict__,
+        'version': 1.1, # Updated version
+        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
 # ------------------------- Dataclasses ------------------------- #
 
 @dataclass
@@ -107,17 +119,18 @@ def calc_K(phi: float, state: str, loads: Loads) -> Dict[str, float]:
         Ka = (1 - math.sin(phi_rad)) / (1 + math.sin(phi_rad)) 
         Kp = (1 + math.sin(phi_rad)) / (1 - math.sin(phi_rad))
         delta = math.radians(phi / 2) 
-        
+   
         # Calculate KaE (Seismic Active Earth Pressure Coefficient)
         if loads.seismic_kh > 0:
             psi = math.radians(math.atan(loads.seismic_kh / (1-loads.seismic_kv)))
             num = (math.cos(phi_rad-psi)**2)
             den = (math.cos(psi)**2) * math.cos(psi+delta) * (1 + math.sqrt(math.sin(phi_rad+delta) * math.sin(phi_rad-psi) / (math.cos(psi+delta))))**2
             KaE = num/den
+ 
         else:
             KaE = Ka
             
-        return {'Ka': KaE, 'Kp': Kp, 'delta': delta}
+        return {'Ka': KaE, 'Kp': Kp, 'delta': delta, 'KaE': KaE} # ADDED 'KaE' back to dict for pressures
     else:
         return {'Ka': 0.0, 'Kp': 0.0, 'delta': 0.0}
 
@@ -154,18 +167,25 @@ def pressures(H: float, soil: Soil, loads: Loads, design_state: str) -> Dict[str
     y_seismic = 0.0
     p0_seismic = 0.0
     
+    # Correction for MO: if seismic, overwrite static earth pressure components
     if loads.use_seismic and design_state == 'Seismic (Mononobe-Okabe)':
         KaE = K['KaE']
         
         P_static = 0.5 * Ka * soil.gamma_fill * H**2
         P_total_seismic = 0.5 * KaE * soil.gamma_fill * H**2
+        
+        # Total lateral Earth force
+        P_earth = P_total_seismic 
+        
+        # Dynamic increment for stability check (for FOS_OT numerator)
         P_dynamic = P_total_seismic - P_static 
         
+        # Center of total force application
+        y_earth = H / 3 
+        
+        # Center of dynamic force application
         y_seismic = 0.6 * H 
         
-        P_earth = P_total_seismic 
-        y_earth = H / 3 
-
     return {
         'Ka': Ka, 'delta': math.degrees(delta), 'KaE': K.get('KaE', Ka),
         'p0_earth': p0_earth, 'P_earth': P_earth, 'y_earth': y_earth,
@@ -183,6 +203,7 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
     W1 = geo.t_stem * (geo.H + geo.t_base) * gamma_c
     x1 = geo.toe + geo.t_stem / 2
     
+  
     # W2: Base
     W2 = geo.B * geo.t_base * gamma_c
     x2 = geo.B / 2
@@ -196,11 +217,13 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
     x4 = geo.toe + geo.t_stem + geo.heel / 2
     
     # W5: Water uplift
+ 
     gwl = loads.gwl_h_from_base
     if gwl > 0:
         p_uplift_base = GAMMA_W * gwl
         W5_uplift = 0.5 * p_uplift_base * geo.B 
-        x5_uplift = geo.toe + geo.t_stem + geo.heel / 3
+        # Uplift force location is at 1/3 base length from max pressure (heel side)
+        x5_uplift = geo.toe + geo.t_stem + geo.heel * (2/3) # Corrected x-location for triangular uplift
     else:
         W5_uplift = 0.0
         x5_uplift = 0.0
@@ -209,13 +232,26 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
     V_total = W1 + W2 + W3 + W4 - W5_uplift
     
     # Overturning Moments (Mo) - wrt toe (x=0)
-    P_H = pres['P_earth'] + pres['P_surcharge'] + pres['P_water'] 
-    Mo = (pres['P_earth'] * pres['y_earth']) + \
-         (pres['P_surcharge'] * pres['y_surcharge']) + \
-         (pres['P_water'] * pres['y_water']) 
+    # The resultant of the horizontal earth pressure component
+    P_H_earth = pres['P_earth'] * math.cos(math.radians(pres['delta']))
+    P_V_earth = pres['P_earth'] * math.sin(math.radians(pres['delta'])) # Vertical component (stabilizing)
+    
+    P_H_surcharge = pres['P_surcharge'] 
+    
+    # Total Horizontal Force (for Sliding)
+    P_H = P_H_earth + P_H_surcharge + pres['P_water'] + pres['P_seismic']
+    
+    # Add stabilizing moment from P_V_earth
+    Mr_V_earth = P_V_earth * (geo.toe + geo.t_stem)
+    V_total += P_V_earth # Add vertical component to V_total
+    
+    Mo = (P_H_earth * pres['y_earth']) + \
+         (P_H_surcharge * pres['y_surcharge']) + \
+         (pres['P_water'] * pres['y_water']) + \
+         (pres['P_seismic'] * pres['y_seismic'])
          
     # Resisting Moments (Mr) - wrt toe (x=0)
-    Mr = (W1 * x1) + (W2 * x2) + (W3 * x3) + (W4 * x4) - (W5_uplift * x5_uplift)
+    Mr = (W1 * x1) + (W2 * x2) + (W3 * x3) + (W4 * x4) - (W5_uplift * x5_uplift) + Mr_V_earth
     
     # ------------------ Stability Checks ------------------
     
@@ -227,6 +263,7 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
     Dp = geo.Df 
     
     if geo.shear_key_depth > 0:
+       
         Dp = geo.Df + geo.shear_key_depth
         
     Pp = 0.5 * Kp * soil.gamma * Dp**2 
@@ -240,6 +277,7 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
     F_friction = V_total * bearing.mu_base
     
     Fr = F_friction + Pp_allow + F_cohesion
+ 
     
     FOS_SL = Fr / P_H if P_H != 0 else 99.0
         
@@ -251,6 +289,7 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
     if abs(e) <= geo.B / 6:
         q_avg = V_total / geo.B
         q_max = q_avg * (1 + 6 * abs(e) / geo.B)
+  
         q_min = q_avg * (1 - 6 * abs(e) / geo.B)
     else:
         a = geo.B / 2 - e
@@ -258,7 +297,8 @@ def stability(geo: Geometry, soil: Soil, loads: Loads, bearing: Bearing, pres: D
              q_max = 9999.0 
              q_min = 9999.0
         else:
-            q_max = 2 * V_total / (3 * a)
+           
+            q_max = 2 * V_total / (3 * abs(a))
             q_min = 0.0
             
     return {
@@ -279,8 +319,10 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
     fy = mat.fy
     
     # --- STEM DESIGN ---
+    # Assume 12mm bar for effective depth calculation 
     d_stem = geo.t_stem * 1000 - mat.cover - 12 
     
+    # Unfactored forces at base of stem
     P_earth_u = pres['P_earth'] * gamma_f_DL
     P_surcharge_u = pres['P_surcharge'] * gamma_f_LL
     P_water_u = pres['P_water'] * gamma_f_DL
@@ -290,7 +332,10 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
               (P_surcharge_u * pres['y_surcharge']) + \
               (P_water_u * pres['y_water']) + \
               (P_seismic_u * pres['y_seismic'])
-              
+     
+    # R_stem calculation (simplified from IS 456 - Cl. G 1.1)
+    # R_stem = (Mu * 1e6) / (b * d^2) -> k_lim ~ 0.138 fck for Fe 415. Use 0.138.
+    # Mu/bd^2 = 4.6 * Mu / (fck * 1000 * d^2) if using 0.138 fck
     R_stem = (4.6 * Mu_stem * 1e6) / (fck * 1000 * d_stem**2)
     
     if R_stem >= 1.0:
@@ -305,14 +350,18 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
     q_max_u = pres['q_max'] * gamma_f_DL
     q_min_u = pres['q_min'] * gamma_f_DL
     
+    # Assume 12mm bar for effective depth calculation 
     d_base = geo.t_base * 1000 - mat.cover - 12 
+ 
     
     # 1. Toe Cantilever
     toe_len = geo.toe
+    # Interpolate pressure at stem-toe junction
     q_sf = q_min_u + (q_max_u - q_min_u) * (geo.toe / geo.B) 
     q_avg_toe = (q_sf + q_max_u) / 2
     M_q_toe = q_avg_toe * toe_len**2 / 2 
 
+    # Unfactored self-weight of toe
     W_toe = geo.t_base * mat.gamma_c * toe_len 
     M_W_toe = W_toe * toe_len / 2
     
@@ -328,12 +377,24 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
     
     # 2. Heel Cantilever 
     heel_len = geo.heel
-    q_sf = q_min_u + (q_max_u - q_min_u) * (geo.toe / geo.B) 
-    q_heel = q_min_u
+    # Interpolate pressure at stem-heel junction (q_sf is pressure at stem face)
+    # The pressure distribution over the heel is trapezoidal from q_min at heel end to q_sf at stem face.
     
-    q_avg_heel = (q_sf + q_min_u) / 2
-    M_q_heel = q_avg_heel * heel_len**2 / 2
+    q_at_heel_end = q_min_u
+    q_at_stem_face = q_min_u + (q_max_u - q_min_u) * ((geo.toe + geo.t_stem) / geo.B)
+
+    # Force 1: Rectangular component
+    P_rect = q_at_heel_end * heel_len
+    M_rect = P_rect * heel_len / 2
+
+    # Force 2: Triangular component (pressure at heel end is q_min_u)
+    delta_q = q_at_stem_face - q_at_heel_end
+    P_tri = 0.5 * delta_q * heel_len
+    M_tri = P_tri * heel_len / 3
     
+    M_q_heel_uplift = (M_rect + M_tri) * gamma_f_DL
+    
+    # Resisting Downward Loads (Unfactored)
     W_soil = geo.H * soil.gamma_fill * heel_len
     W_surcharge = loads.surcharge_q * heel_len
     W_base = geo.t_base * mat.gamma_c * heel_len
@@ -343,9 +404,8 @@ def member_design(geo: Geometry, soil: Soil, loads: Loads, pres: Dict[str, float
     M_W_base = W_base * heel_len / 2
     
     M_total_resisting = (M_W_soil + M_W_surcharge + M_W_base) * gamma_f_DL
-    M_total_uplift = M_q_heel * gamma_f_DL
     
-    Mu_heel = M_total_resisting - M_total_uplift
+    Mu_heel = M_total_resisting - M_q_heel_uplift
     
     R_heel = (4.6 * Mu_heel * 1e6) / (fck * 1000 * d_base**2)
     if R_heel >= 1.0:
@@ -383,6 +443,7 @@ def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bea
     if geo.shear_key_depth > 0:
         ax.add_patch(plt.Rectangle((stem_x, -geo.shear_key_depth), geo.t_stem, geo.shear_key_depth, fill=False, edgecolor='k', linewidth=2)) # Shear Key
 
+    # 
     # Ground Level
     ax.plot([-0.3, B + 0.3], [geo.t_base + geo.Df, geo.t_base + geo.Df], 'k--')
     ax.text(B + 0.3, geo.t_base + geo.Df, 'GL', va='bottom', ha='left')
@@ -391,8 +452,11 @@ def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bea
     # ------------------ Reinforcement Schematic ------------------
     if show_rebar:
         c = mat.cover / 1000
+        # Stem vertical steel (inner/tension face)
         ax.plot([geo.toe + geo.t_stem - c, geo.toe + geo.t_stem - c], [stem_y + c, H_wall - c], 'r--')
-        ax.plot([geo.toe + geo.t_stem + c, B - c], [geo.t_base - c, geo.t_base - c], 'b--')
+        # Heel top steel (tension face)
+        ax.plot([geo.toe + geo.t_stem + c, B - c], [geo.t_base + c, geo.t_base + c], 'b--')
+        # Toe bottom steel (tension face)
         ax.plot([c, geo.toe + geo.t_stem - c], [c, c], 'g--')
         
     # ------------------ Bearing Pressure Diagram ------------------
@@ -413,12 +477,14 @@ def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bea
         y_min = base_y - q_min * pressure_scale
 
         if abs(stab['e']) <= B / 6:
+      
             X_press = [0, B, B, 0]
             Y_press = [y_max, y_min, base_y, base_y]
             ax.fill(X_press, Y_press, 'red', alpha=0.3, label='Actual Pressure')
             ax.plot([0, B], [y_max, y_min], 'r-', linewidth=2)
             
             ax.text(0, y_max, f'{q_max:.1f}', va='top', ha='center', color='r')
+         
             ax.text(B, y_min, f'{q_min:.1f}', va='top', ha='center', color='r')
 
         else:
@@ -433,6 +499,7 @@ def plot_wall_section(geo: Geometry, mat: Materials, stab: Dict[str, float], bea
                 ax.text(0, y_max, f'{q_max:.1f} kPa', va='top', ha='center', color='r')
 
             else: 
+   
                 L_contact = 3 * (geo.B / 2 + e) 
                 start_x = B - L_contact
                 X_press = [start_x, B, B]
@@ -473,6 +540,7 @@ def plot_pressure_diagram(H: float, p_earth: float, p_surcharge: float, p_water:
         H_w_top = H - gwl_h_from_base 
         Y_w = np.array([H_w_top, H])
         ax.plot([0, p_water], Y_w, 'c-')
+     
         ax.fill_betweenx(Y_w, [0, p_water], color='cyan', alpha=0.3, label='Water')
         ax.text(p_water, H, f'{p_water:.2f} kPa', va='bottom', ha='right', bbox=dict(facecolor='white', alpha=0.7))
         
@@ -513,6 +581,7 @@ def make_boq(geo: Geometry, mat: Materials, provided_steel: Dict[str, float]) ->
     df = pd.DataFrame({
         'Item': ['Concrete Volume', 'Steel Mass (Approx.)', 'Formwork Area'],
         'Unit': ['m³/m', 'kg/m³', 'm²/m'],
+       
         'Value': [V_conc, steel_kg_m3, (geo.H * 2) + (geo.t_base * 2)]
     })
     df.loc[len(df)] = ['Total Steel Mass', 'kg/m', M_steel]
@@ -526,6 +595,48 @@ st.title('Retaining Wall Design Wizard')
 st.header('Design Inputs and Calculations (Single Page) 📝')
 
 # --- Initial State/Default Values ---
+# Function to load state from JSON
+def load_state_from_dict(data):
+    st.session_state['project_name'] = data.get('project_name', 'RW-01')
+    st.session_state['wall_type'] = data.get('wall_type', 'Cantilever T-Wall')
+    st.session_state['design_state'] = data.get('design_state', 'Active')
+    
+    geo_data = data.get('geo', {})
+    st.session_state['geo'] = Geometry(
+        H=geo_data.get('H', 4.0), Df=geo_data.get('Df', 1.0), 
+        t_stem=geo_data.get('t_stem', 0.4), t_base=geo_data.get('t_base', 0.6), 
+        toe=geo_data.get('toe', 1.0), heel=geo_data.get('heel', 2.0), 
+        shear_key_depth=geo_data.get('shear_key_depth', 0.0)
+    )
+    soil_data = data.get('soil', {})
+    st.session_state['soil'] = Soil(
+        gamma=soil_data.get('gamma', 18.0), phi=soil_data.get('phi', 30.0), 
+        c_base=soil_data.get('c_base', 0.0), gamma_sub=soil_data.get('gamma_sub', 9.81), 
+        gamma_fill=soil_data.get('gamma_fill', 18.0)
+    )
+    loads_data = data.get('loads', {})
+    st.session_state['loads'] = Loads(
+        surcharge_q=loads_data.get('surcharge_q', 10.0), 
+        gwl_h_from_base=loads_data.get('gwl_h_from_base', 0.0), 
+        seismic_kh=loads_data.get('seismic_kh', 0.0), 
+        seismic_kv=loads_data.get('seismic_kv', 0.0), 
+        use_seismic=loads_data.get('use_seismic', False)
+    )
+    mat_data = data.get('mat', {})
+    st.session_state['mat'] = Materials(
+        fck=mat_data.get('fck', 25), fy=mat_data.get('fy', 415), 
+        gamma_c=mat_data.get('gamma_c', 25.0), cover=mat_data.get('cover', 50)
+    )
+    bearing_data = data.get('bearing', {})
+    st.session_state['bearing'] = Bearing(
+        SBC_allow=bearing_data.get('SBC_allow', 150.0), 
+        mu_base=bearing_data.get('mu_base', 0.5), 
+        include_passive=bearing_data.get('include_passive', True), 
+        passive_reduction=bearing_data.get('passive_reduction', 0.66)
+    )
+    st.rerun()
+
+# Check for initial state or load state
 if 'geo' not in st.session_state:
     st.session_state['geo'] = Geometry(H=4.0, Df=1.0, t_stem=0.4, t_base=0.6, toe=1.0, heel=2.0, shear_key_depth=0.0)
 if 'soil' not in st.session_state:
@@ -536,13 +647,39 @@ if 'mat' not in st.session_state:
     st.session_state['mat'] = Materials(fck=25, fy=415, gamma_c=25.0, cover=50)
 if 'bearing' not in st.session_state:
     st.session_state['bearing'] = Bearing(SBC_allow=150.0, mu_base=0.5, include_passive=True, passive_reduction=0.66)
-    
+if 'project_name' not in st.session_state:
+    st.session_state['project_name'] = 'RW-01'
+if 'wall_type' not in st.session_state:
+    st.session_state['wall_type'] = 'Cantilever T-Wall'
+if 'design_state' not in st.session_state:
+    st.session_state['design_state'] = 'Active'
+
+# --- Load Design File Input (NEW) ---
+with st.sidebar:
+    st.header("Load Existing Design")
+    uploaded_file = st.file_uploader("Upload .json Design File", type="json")
+    if uploaded_file is not None:
+        try:
+            bytes_data = uploaded_file.getvalue()
+            data = json.loads(bytes_data.decode("utf-8"))
+            load_state_from_dict(data)
+            st.success(f"Design '{data.get('project_name')}' loaded successfully.")
+        except Exception as e:
+            st.error(f"Error loading file: {e}")
+    st.markdown("---")
+
+
 # --- Inputs (Now on Main Page) ---
 with st.expander('1. Project & General Parameters', expanded=False):
     col1, col2, col3 = st.columns(3)
-    project_name = col1.text_input('Project Name', 'RW-01')
-    wall_type = col2.selectbox('Wall Type', ['Cantilever T-Wall', 'Cantilever L-Wall', 'Cantilever Inverted-T Wall'])
-    design_state = col3.selectbox('Earth Pressure State', ['Active', 'At-Rest', 'Seismic (Mononobe-Okabe)'])
+    project_name = col1.text_input('Project Name', st.session_state['project_name'], key='proj_name_input')
+    wall_type = col2.selectbox('Wall Type', ['Cantilever T-Wall', 'Cantilever L-Wall', 'Cantilever Inverted-T Wall'], index=['Cantilever T-Wall', 'Cantilever L-Wall', 'Cantilever Inverted-T Wall'].index(st.session_state['wall_type']) if st.session_state['wall_type'] in ['Cantilever T-Wall', 'Cantilever L-Wall', 'Cantilever Inverted-T Wall'] else 0, key='wall_type_select')
+    design_state = col3.selectbox('Earth Pressure State', ['Active', 'At-Rest', 'Seismic (Mononobe-Okabe)'], index=['Active', 'At-Rest', 'Seismic (Mononobe-Okabe)'].index(st.session_state['design_state']) if st.session_state['design_state'] in ['Active', 'At-Rest', 'Seismic (Mononobe-Okabe)'] else 0, key='design_state_select')
+    
+    # Update session state with values from widgets
+    st.session_state['project_name'] = project_name
+    st.session_state['wall_type'] = wall_type
+    st.session_state['design_state'] = design_state
 
 st.divider()
 
@@ -550,14 +687,14 @@ st.divider()
 with st.expander('2. Wall Geometry and Dimensions', expanded=False):
     geo = st.session_state['geo']
     c1, c2, c3, c4 = st.columns(4)
-    geo.H = c1.number_input('Height of Stem (H, m)', 1.0, 15.0, geo.H, 0.1)
-    geo.t_stem = c2.number_input('Stem Thickness (t_stem, m)', 0.2, 2.0, geo.t_stem, 0.05)
-    geo.t_base = c3.number_input('Base Slab Thickness (t_base, m)', 0.3, 2.0, geo.t_base, 0.05)
-    geo.shear_key_depth = c4.number_input('Shear Key Depth (m)', 0.0, 1.0, geo.shear_key_depth, 0.1)
+    geo.H = c1.number_input('Height of Stem (H, m)', 1.0, 15.0, geo.H, 0.1, key='H_input')
+    geo.t_stem = c2.number_input('Stem Thickness (t_stem, m)', 0.2, 2.0, geo.t_stem, 0.05, key='t_stem_input')
+    geo.t_base = c3.number_input('Base Slab Thickness (t_base, m)', 0.3, 2.0, geo.t_base, 0.05, key='t_base_input')
+    geo.shear_key_depth = c4.number_input('Shear Key Depth (m)', 0.0, 1.0, geo.shear_key_depth, 0.1, key='sk_depth_input')
     
     c5, c6, c7 = st.columns(3)
-    geo.toe = c5.number_input('Toe Length (toe, m)', 0.1, 5.0, geo.toe, 0.1)
-    geo.heel = c6.number_input('Heel Length (heel, m)', 0.1, 5.0, geo.heel, 0.1)
+    geo.toe = c5.number_input('Toe Length (toe, m)', 0.1, 5.0, geo.toe, 0.1, key='toe_input')
+    geo.heel = c6.number_input('Heel Length (heel, m)', 0.1, 5.0, geo.heel, 0.1, key='heel_input')
     
     geo.B = geo.toe + geo.t_stem + geo.heel 
     c7.markdown(f'**Base Width (B): {geo.B:.2f} m**')
@@ -593,8 +730,8 @@ with st.expander('3. Soil, Loads, and Materials', expanded=False):
     with col_mat:
         st.subheader('Materials & Bearing')
         mat = st.session_state['mat']
-        mat.fck = st.selectbox('Concrete Grade (fck)', [20, 25, 30, 35], index=1, key='fck')
-        mat.fy = st.selectbox('Steel Grade (fy)', [415, 500], index=0, key='fy')
+        mat.fck = st.selectbox('Concrete Grade (fck)', [20, 25, 30, 35], index=[20, 25, 30, 35].index(mat.fck) if mat.fck in [20, 25, 30, 35] else 1, key='fck')
+        mat.fy = st.selectbox('Steel Grade (fy)', [415, 500], index=[415, 500].index(mat.fy) if mat.fy in [415, 500] else 0, key='fy')
         mat.cover = st.number_input('Clear Cover (mm)', 25, 100, mat.cover, 5, key='cover')
 
         bearing = st.session_state['bearing']
@@ -605,7 +742,8 @@ with st.expander('3. Soil, Loads, and Materials', expanded=False):
             bearing.passive_reduction = st.slider('Pp Reduction Factor (η)', 0.5, 1.0, bearing.passive_reduction, 0.05, key='pp_red')
 
 
-# ------------------------- Core Calculations (Run Once) ------------------------- #
+# ------------------------- Core Calculations ------------------------- #
+# These functions run on every Streamlit rerun, capturing the latest inputs.
 pres = pressures(geo.H, soil, loads, design_state)
 stab = stability(geo, soil, loads, bearing, pres)
 pres.update({'q_avg': stab['q_avg'], 'q_max': stab['q_max'], 'q_min': stab['q_min']})
@@ -649,6 +787,10 @@ with st.expander('4.2 Stability Checks (SLS) - Narrative & Results', expanded=Tr
     P_w_val = f"{pres['P_water']:.2f}"
     P_seis_val = f"{pres['P_seismic']:.2f}"
     
+    # NEW values for inclination and resultant height
+    delta_val = f"{pres['delta']:.2f}"
+    y_earth_val = f"{pres['y_earth']:.2f}"
+
     # Values for Sliding
     mu_base_val = f"{bearing.mu_base:.2f}"
     F_fric_val = f"{stab['F_friction']:.2f}"
@@ -671,9 +813,13 @@ with st.expander('4.2 Stability Checks (SLS) - Narrative & Results', expanded=Tr
 
     # 1. Overturning Check
     st.markdown("#### 1. Overturning Check")
-    st.markdown(f"**Lateral Forces (H):** $P_H = P_{{earth}} + P_{{surcharge}} + P_{{water}} + P_{{seismic}} = {P_e_val} + {P_s_val} + {P_w_val} + {P_seis_val} = {P_H_val} \\text{{ kN/m}}$")
-    st.markdown(f"**Vertical Forces (V):** $V = \\sum W_i - W_{{uplift}} = {V_val} \\text{{ kN/m}}$")
-    st.markdown(f"**Overturning Moment ($M_o$):** $M_o = \\sum (P_i \\cdot y_i) = {Mo_val} \\text{{ kNm/m}}$")
+    # NEW: Inclination and Resultant Height
+    st.markdown(f"**Lateral Force Inclination:** Earth pressure force is applied at an angle of $\\delta = {delta_val}^\circ$ to the normal to the stem.")
+    st.markdown(f"**Earth Force Resultant Height:** $P_{{earth}}$ resultant is at $y_{{earth}} = {y_earth_val} \\text{{ m}}$ from the base.")
+    
+    st.markdown(f"**Total Lateral Forces (H):** $P_H = P_{{earth}} (H) + P_{{surcharge}} + P_{{water}} + P_{{seismic}} = {P_H_val} \\text{{ kN/m}}$ (Horizontal component)")
+    st.markdown(f"**Total Vertical Forces (V):** $V = \\sum W_i \\pm P_{{V,earth}} - W_{{uplift}} = {V_val} \\text{{ kN/m}}$")
+    st.markdown(f"**Overturning Moment ($M_o$):** $M_o = \\sum (P_{{H,i}} \\cdot y_i) = {Mo_val} \\text{{ kNm/m}}$")
     st.markdown(f"**Resisting Moment ($M_r$):** $M_r = \\sum (W_i \\cdot x_i) = {Mr_val} \\text{{ kNm/m}}$")
     st.markdown(f"**FOS Overturning:** $\\text{{FOS}}_{{OT}} = M_r / M_o = {Mr_val} / {Mo_val} = {FOS_OT_val}$ (Required $\\ge 2.0$)")
 
@@ -782,7 +928,20 @@ st.divider()
 with st.expander('5. Report Generation and Downloads', expanded=False):
     st.subheader('Final Report & CAD Export')
 
-    c_dxf, c_pdf, c_excel = st.columns(3)
+    # NEW: Prepare the design state for download
+    current_state = create_state_dict(geo, soil, loads, mat, bearing, project_name, wall_type, design_state)
+    json_state = json.dumps(current_state, indent=4)
+    
+    c_save, c_dxf, c_pdf, c_excel = st.columns(4)
+
+    # NEW: Download Design File
+    c_save.download_button(
+        label="Download Design File (.json) 💾",
+        data=json_state,
+        file_name=f'{project_name}_RW_Design.json',
+        mime="application/json"
+    )
+
     c_dxf.info('DXF is supported with ezdxf.')
     c_pdf.info('PDF report is supported with reportlab.')
     
