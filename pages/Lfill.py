@@ -626,9 +626,17 @@ def plotly_3d_full_stack(bblabl: dict, avg_ground_rl: float):
                              y=np.array([[-plane_size/2, -plane_size/2], [plane_size/2, plane_size/2]]),
                              opacity=0.1, colorscale=[[0, 'green'], [1, 'green']], showscale=False, name="Ground Level"))
 
+    # In plotly_3d_full_stack function:
+    
     fig.update_layout(title="3D Landfill (BBL + ABL) - Relative RL", height=600,
                       scene=dict(xaxis_title="Easting (m)", yaxis_title="Northing (m)", zaxis_title="RL (m)",
-                                 aspectmode="data", # ensures consistent scaling
+                                 # CHANGE aspectmode to 'manual' or 'cube'
+                                 # 'data' causes severe skewing when Z is much smaller than X/Y.
+                                 # Using 'cube' ensures equal scaling in all directions.
+                                 aspectmode="cube", 
+                                 # Optionally, use 'manual' to stretch Z if needed for clarity:
+                                 # aspectmode="manual",
+                                 # aspectratio=dict(x=1, y=1, z=0.3) 
                                  ),
                       showlegend=True)
     return fig
@@ -991,22 +999,17 @@ with report_tab:
         center_lat = st.session_state.site.latitude
         avg_ground_rl = st.session_state.site.avg_ground_rl
         
-        def to_lonlat_rl(coords, W, L, RL):
-            # Simple offset to approximate location. Requires proper UTM for accuracy.
-            W_GL_ref = st.session_state.footprint["W_GL"] # Use GL dimensions as the reference for coordinate scale
-            L_GL_ref = st.session_state.footprint["L_GL"]
-            
-            # Using a simplified WGS84 meter-to-degree conversion (very rough)
-            # 1 meter is approx 1/111000 degree
-            scale = 1/111000 
-            
-            # Offset points from 0,0 center based on the current W, L
-            # Note: rectangle_polygon returns coordinates centered at 0,0.
-            
-            return [(center_lon + x * scale, 
-                     center_lat + y * scale, 
-                     RL) 
-                    for x, y in coords]
+    def to_lonlat_rl(coords, W, L, RL):
+        center_lon = st.session_state.site.longitude
+        center_lat = st.session_state.site.latitude
+        # Use the rough WGS84 meter-to-degree conversion
+        scale = 1/111000 
+        
+        # We use the coords which are centered at (0,0) in the local system.
+        return [(center_lon + x * scale, 
+                 center_lat + y * scale, 
+                 RL) 
+                for x, y in coords]
 
         # 1. Base Footprint
         base_coords = rectangle_polygon(st.session_state.bblabl["W_Base"], st.session_state.bblabl["L_Base"])
