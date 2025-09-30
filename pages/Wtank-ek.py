@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import math
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict # Added asdict
 from typing import Optional, Tuple, List, Dict
 
 import numpy as np
@@ -108,12 +108,65 @@ class Loads:
     phi: float = 30.0   
     mu_base: float = 0.5 
     z_g_zone: int = 3   
-    Hwt: float = 0.0    # Changed default to a safe 0.0
+    Hwt: float = 0.0    
 
 # ===============================
-# Engineering Helper Functions
+# Import/Export Functions
 # ===============================
 
+def export_data(mat, geom, loads):
+    """Exports session state data to a JSON string."""
+    data = {
+        'materials': asdict(mat),
+        'geometry': asdict(geom),
+        'loads': asdict(loads),
+        'version': '1.1' 
+    }
+    return json.dumps(data, indent=4)
+
+def import_data(uploaded_file, mat, geom, loads):
+    """Imports data from an uploaded JSON file and updates session state."""
+    if uploaded_file is None:
+        return
+        
+    try:
+        data = json.load(uploaded_file)
+        
+        # Helper to safely update dataclass
+        def update_dataclass(target_class, source_dict):
+            # Use annotations for type hints, only update fields that exist
+            for field in target_class.__annotations__.keys():
+                if field in source_dict:
+                    try:
+                        # Attempt to cast the value to the correct type (e.g., float, int, str)
+                        target_type = target_class.__annotations__[field]
+                        value = source_dict[field]
+                        
+                        # Handle Optional type hint (e.g., Optional[float] -> float)
+                        if getattr(target_type, '__origin__', None) is Optional:
+                            target_type = target_type.__args__[0]
+                        
+                        # Set the attribute
+                        setattr(target_class, field, target_type(value))
+                    except (TypeError, ValueError):
+                        st.warning(f"Skipped field '{field}' due to type mismatch in file.")
+                        
+        # Update the session state objects
+        update_dataclass(mat, data.get('materials', {}))
+        update_dataclass(geom, data.get('geometry', {}))
+        update_dataclass(loads, data.get('loads', {}))
+        
+        st.success("Project data imported successfully! Rerunning app...")
+        st.rerun()
+        
+    except json.JSONDecodeError:
+        st.error("Error: Could not decode JSON file. Please ensure the file format is correct.")
+    except Exception as e:
+        st.error(f"An unexpected error occurred during import: {e}")
+
+# ===============================
+# Engineering Helper Functions (Omitted for brevity, but exist in file)
+# ===============================
 def bilinear_interpolate(ratio: float, df: pd.DataFrame, col: str) -> float:
     """Interpolates between values in a dataframe index."""
     idx = df.index
@@ -235,6 +288,38 @@ if 'mat' not in st.session_state:
     st.session_state.loads.Hwt = st.session_state.geom.H + st.session_state.geom.t_base
     
 mat, geom, loads = st.session_state.mat, st.session_state.geom, st.session_state.loads
+
+# ----------------------------------------------------
+# --- SIDEBAR: IMPORT/EXPORT FEATURE ---
+# ----------------------------------------------------
+st.sidebar.header("💾 Project Management")
+st.sidebar.markdown("---")
+
+# EXPORT
+st.sidebar.subheader("Export to JSON")
+export_json = export_data(mat, geom, loads)
+st.sidebar.download_button(
+    label="⬇️ Download Project Data (.json)",
+    data=export_json,
+    file_name="watertank_design_data.json",
+    mime="application/json",
+    key="export_button"
+)
+
+st.sidebar.markdown("---")
+
+# IMPORT
+st.sidebar.subheader("Import from JSON")
+uploaded_file = st.sidebar.file_uploader(
+    "Choose a JSON file",
+    type="json",
+    key="import_file_uploader"
+)
+if uploaded_file is not None:
+    import_data(uploaded_file, mat, geom, loads)
+
+st.sidebar.markdown("---")
+# ----------------------------------------------------
 
 
 # Column Layout for Inputs
