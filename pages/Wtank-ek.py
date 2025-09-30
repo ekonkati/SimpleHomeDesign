@@ -174,6 +174,13 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
     # Pressures
     P_max_w = loads.gamma_w * H_wall
     P_max_s = 0
+    
+    # Format numbers outside of the Mathtext string
+    P_max_w_str = f'{P_max_w:.1f}'
+    R_liq_str = f'{R_liq:.1f}'
+    P_max_s_str = f'{0:.1f}' # Default for soil
+    R_soil_str = f'{R_soil:.1f}'
+
 
     # ----------------------------------------------------
     # 2. Draw the Wall and Base Geometry (Profile View)
@@ -202,30 +209,40 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
     ax.fill_betweenx([t_base, H_total], [0, P_max_w], 0, color='b', alpha=0.3, label='Water Pressure')
     ax.plot(x_w, y_w, color='b', linestyle='--') 
     
-    # Pressure magnitude label (Pmax) - FIXED: Combined into one raw f-string with \mathrm
-    ax.text(P_max_w * 1.05, t_base + 0.1, fr'$P_{{w, \max}} = {P_max_w:.1f}\ \mathrm{{kN/m^2}}$', color='b', fontsize=10)
+    # Pressure magnitude label (Pmax) - FIXED: Separated string concatenation
+    ax.text(P_max_w * 1.05, t_base + 0.1, 
+            r'$P_{\mathrm{w, max}} = ' + P_max_w_str + r'\ \mathrm{kN/m^2}$', 
+            color='b', fontsize=10)
     
-    # Resultant force label (R_w) - FIXED: Combined into one raw f-string with \mathrm
+    # Resultant force label (R_w) - FIXED: Separated string concatenation
     ax.arrow(P_max_w * 0.5, t_base + H_wall/3, -0.05, 0, head_width=0.1, head_length=0.1, fc='b', ec='b')
-    ax.text(P_max_w * 0.5, t_base + H_wall/3 + 0.2, fr'$R_w = {R_liq:.1f}\ \mathrm{{kN/m}}$', color='b', ha='center', fontsize=10)
+    ax.text(P_max_w * 0.5, t_base + H_wall/3 + 0.2, 
+            r'$R_w = ' + R_liq_str + r'\ \mathrm{kN/m}$', 
+            color='b', ha='center', fontsize=10)
 
     # ----------------------------------------------------
     # 4. Earth Pressure (P_soil) - Acting on outer face (left)
     # ----------------------------------------------------
     if geom.tank_type == "Ground":
         P_max_s = loads.gamma_s * loads.K0 * H_total
+        P_max_s_str = f'{P_max_s:.1f}'
+        
         x_s = [-P_max_s, 0, 0]
         y_s = [0, 0, H_total]
         
         ax.fill_betweenx([0, H_total], [-P_max_s, 0], 0, color='brown', alpha=0.3, label='Earth Pressure')
         ax.plot(x_s, y_s, color='brown', linestyle='--')
         
-        # Pressure magnitude label (Pmax) - FIXED: Combined into one raw f-string with \mathrm
-        ax.text(-P_max_s * 1.05, 0.1, fr'$P_{{s, \max}} = {P_max_s:.1f}\ \mathrm{{kN/m^2}}$', color='brown', ha='right', fontsize=10)
+        # Pressure magnitude label (Pmax) - FIXED: Separated string concatenation
+        ax.text(-P_max_s * 1.05, 0.1, 
+                r'$P_{\mathrm{s, max}} = ' + P_max_s_str + r'\ \mathrm{kN/m^2}$', 
+                color='brown', ha='right', fontsize=10)
         
-        # Resultant force label (R_s) - FIXED: Combined into one raw f-string with \mathrm
+        # Resultant force label (R_s) - FIXED: Separated string concatenation
         ax.arrow(-P_max_s * 0.5, H_total/3, 0.05, 0, head_width=0.1, head_length=0.1, fc='brown', ec='brown')
-        ax.text(-P_max_s * 0.5, H_total/3 + 0.2, fr'$R_s = {R_soil:.1f}\ \mathrm{{kN/m}}$', color='brown', ha='center', fontsize=10)
+        ax.text(-P_max_s * 0.5, H_total/3 + 0.2, 
+                r'$R_s = ' + R_soil_str + r'\ \mathrm{kN/m}$', 
+                color='brown', ha='center', fontsize=10)
 
     # ----------------------------------------------------
     # 5. Formatting and Display
@@ -261,13 +278,20 @@ def plot_loads(geom: Geometry, loads: Loads, R_liq: float, R_soil: float):
 def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     """Plots the Bending Moment and Shear Force Diagrams."""
     
+    # Format numbers outside of the Mathtext string
+    V_max_str = f'{V_base_max:.1f}'
+    M_L_str = f'{M_base_L:.1f}'
+    M_B_str = f'{M_base_B:.1f}'
+
     # Shear Force (Common for both walls)
     fig_v, ax_v = plt.subplots(figsize=(3.5, 6))
     ax_v.plot([0, V_base_max, 0], [0, 0, H], 'r-', linewidth=2)
     ax_v.fill([0, V_base_max, 0], [0, 0, H], 'r', alpha=0.2)
     ax_v.plot([0, 0], [0, H], 'k--')
-    # FIXED: Combined into one raw f-string with \mathrm
-    ax_v.text(V_base_max * 1.1, 0.05, fr'$V_{{max}} = {V_base_max:.1f}\ \mathrm{{kN/m}}$', color='r', fontsize=10)
+    # FIXED: Separated string concatenation
+    ax_v.text(V_base_max * 1.1, 0.05, 
+              r'$V_{\max} = ' + V_max_str + r'\ \mathrm{kN/m}$', 
+              color='r', fontsize=10)
     ax_v.set_title("Shear Force ($V$)", fontsize=12)
     ax_v.set_xlabel("Shear (kN/m)", fontsize=10)
     ax_v.set_ylabel("Height (m)", fontsize=10)
@@ -281,8 +305,10 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     ax_m_L.plot(x_m_L, y_m_L, 'b-', linewidth=2)
     ax_m_L.fill(x_m_L, y_m_L, 'b', alpha=0.2)
     ax_m_L.plot([0, 0], [0, H], 'k--')
-    # FIXED: Combined into one raw f-string with \mathrm
-    ax_m_L.text(M_base_L * 1.1, 0.05, fr'$M_{{L}} = {M_base_L:.1f}\ \mathrm{{kNm/m}}$', color='b', fontsize=10)
+    # FIXED: Separated string concatenation
+    ax_m_L.text(M_base_L * 1.1, 0.05, 
+                r'$M_{L} = ' + M_L_str + r'\ \mathrm{kNm/m}$', 
+                color='b', fontsize=10)
     ax_m_L.set_title("Moment - Long Wall ($M_L$)", fontsize=12)
     ax_m_L.set_xlabel("Moment (kNm/m)", fontsize=10)
     ax_m_L.set_ylabel("Height (m)", fontsize=10)
@@ -296,8 +322,10 @@ def plot_results(H: float, M_base_L: float, M_base_B: float, V_base_max: float):
     ax_m_B.plot(x_m_B, y_m_B, 'g-', linewidth=2)
     ax_m_B.fill(x_m_B, y_m_B, 'g', alpha=0.2)
     ax_m_B.plot([0, 0], [0, H], 'k--')
-    # FIXED: Combined into one raw f-string with \mathrm
-    ax_m_B.text(M_base_B * 1.1, 0.05, fr'$M_{{B}} = {M_base_B:.1f}\ \mathrm{{kNm/m}}$', color='g', fontsize=10)
+    # FIXED: Separated string concatenation
+    ax_m_B.text(M_base_B * 1.1, 0.05, 
+                r'$M_{B} = ' + M_B_str + r'\ \mathrm{kNm/m}$', 
+                color='g', fontsize=10)
     ax_m_B.set_title("Moment - Short Wall ($M_B$)", fontsize=12)
     ax_m_B.set_xlabel("Moment (kNm/m)", fontsize=10)
     ax_m_B.set_ylabel("Height (m)", fontsize=10)
