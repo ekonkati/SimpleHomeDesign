@@ -35,7 +35,7 @@ except Exception:
 # ---------------------------
 
 def rectangle_polygon(width: float, length: float) -> List[Tuple[float, float]]:
-    half_w, half_l = width / 2.0, length / 2.0
+    half_W, half_L = W / 2.0, L / 2.0
     return [(-half_w, -half_l), (half_w, -half_l), (half_w, half_l), (-half_w, half_l), (-half_w, -half_l)]
 
 def frustum_volume(h: float, A1: float, A2: float) -> float:
