@@ -34,8 +34,6 @@ st.markdown("""
   background: #fffceb !important;
 }
 .js-plotly-plot, .plotly, .user-select-none { margin: 0 !important; }
-.ok {color:#0a7a0a;font-weight:700}
-.notok {color:#b00020;font-weight:700}
 .badge {padding:4px 8px;border-radius:8px;background:#eef7ee;color:#0a7a0a;font-weight:700}
 .badge.bad {background:#fdecee;color:#b00020}
 </style>
@@ -234,10 +232,9 @@ def plot_pm_curve_plotly(b: float, D: float, bars: List[Tuple[float, float, floa
     cs = np.linspace(0.01 * depth, 1.50 * depth, 120)
     P_list, M_list = [], []
     for c in cs:
-        xu = min(c, depth)
         width = b if axis == 'x' else D
-        Cc = 0.36 * fck * width * xu
-        arm_Cc = 0.5 * depth - 0.42 * xu
+        Cc = 0.36 * fck * width * min(c, depth)
+        arm_Cc = 0.5 * depth - 0.42 * min(c, depth)
         Mc = Cc * arm_Cc
         Fs, Ms = 0.0, 0.0
         for (x_abs, y_abs, dia) in bars:
@@ -316,19 +313,17 @@ def recalculate_properties(state):
                       Mux_base=Mux_base, Muy_base=Muy_base, Mux_eff=Mux_eff, Muy_eff=Muy_eff,
                       emin_x=emin_x, emin_y=emin_y))
 
-    # (3) Biaxial utilization
+    # (3) Biaxial utilization (strength)
     util, Mux_lim, Muy_lim = biaxial_utilization(b, D, bars, fck, fy, Pu, Mux_eff, Muy_eff, state["alpha"])
     state.update(dict(Mux_lim=Mux_lim, Muy_lim=Muy_lim, util=util))
 
     # (4) Shear & ties (advisory)
     max_long_dia = max([bar[2] for bar in bars], default=16.0)
     d_eff = D - (cover + state["tie_dia"] + 0.5 * max_long_dia)
-
     phiN = float(np.clip(1.0 + (Pu / max(1.0, (0.25 * fck * Ag))), 0.5, 1.5))
     tau_c_base = 0.62 * math.sqrt(fck)   # conservative (N/mm²)
     Vc = tau_c_base * b * d_eff * phiN   # N
     Vus = max(0.0, Vu - Vc)              # N
-
     state.update(dict(Vc=Vc, Vus=Vus, phiN=phiN, d_eff=d_eff))
 
     # (5) Tie spacing requirements
@@ -341,6 +336,15 @@ def recalculate_properties(state):
                   "s_cap_detailing": s_cap_detailing,
                   "s_13920_confine": s_13920_confine,
                   "s_governing_tie": s_governing_tie})
+
+    # (6) Longitudinal steel requirement (strength vs min %)
+    As_min = 0.008 * Ag  # IS 456 minimum for columns (0.8% of gross)
+    # Simple proportionality assumption: capacity ∝ Ast (teaching-grade)
+    As_req_strength = As_long * (util ** (1.0 / max(state["alpha"], 1e-6)))
+    As_req = max(As_min, As_req_strength)
+    reason = "min % (0.8%·Ag)" if As_min >= As_req_strength else "strength (biaxial utilization)"
+    state.update(dict(As_min=As_min, As_req_strength=As_req_strength, As_req=As_req, As_reason=reason))
+
     return b, D, cover, bars, Ag
 
 # ------------------------- 5) APP -------------------------
@@ -406,7 +410,7 @@ def main():
     st.markdown("---")
     st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
 
-    # --- 2) Reinforcement & (now with live recalc before plotting) ---
+    # --- 2) Reinforcement (live recalc before plotting) + Quick Check ---
     st.header("2️⃣ Reinforcement and Slenderness Setup")
     col_r1, col_r2, col_r3 = st.columns([1,1,1.2])
     bar_options = [12.0, 16.0, 20.0, 25.0, 28.0, 32.0]
@@ -428,24 +432,38 @@ def main():
         state["dia_side"] = st.selectbox("Side bar $\\phi$ (mm)", bar_options[:-1], index=bar_options[:-1].index(state["dia_side"]), key='in_dside')
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 🔧 IMPORTANT: recalc *after* bar counts/diameters, then draw
+    # 🔧 Recalc *after* bar counts/diameters, then draw
     b, D, cover, bars, Ag = recalculate_properties(state)
 
     with col_r2:
-        st.markdown(f"**$A_{{st}}$ Provided:** **{state['As_long']:.0f} mm$^2$** ({state['As_long'] * 100 / Ag:.2f}% $\\rho$)")
+        st.markdown(f"**$A_{{st}}$ Provided:** **{state['As_long']:.0f} mm$^2$** "
+                    f"({state['As_long'] * 100 / Ag:.2f}% $\\rho$)")
 
     with col_r3:
         st.subheader("Section Sketch & Quick Check")
         fig_sec_inputs = plotly_cross_section(b, D, cover, bars, state['tie_dia'], state['tie_spacing'])
         chart(fig_sec_inputs, key=kkey("sec","inputs"))
 
-        # 👇 Quick interaction check right here beside the bars
+        # Quick biaxial check + steel requirement right here
         util = state['util']
         passfail = "PASS" if util <= 1.0 else "FAIL"
         badge_class = "badge" if util <= 1.0 else "badge bad"
         st.markdown(f'<span class="{badge_class}">Quick biaxial Σ = {util:.2f} → {passfail}</span>', unsafe_allow_html=True)
-        st.caption(f"Uses current Pu/Mux/Muy and slenderness settings. Mux_eff {kNm(state['Mux_eff'])} vs Mux_lim {kNm(state['Mux_lim'])}; "
-                   f"Muy_eff {kNm(state['Muy_eff'])} vs Muy_lim {kNm(state['Muy_lim'])}.")
+
+        As_long = state['As_long']
+        As_req  = state['As_req']
+        reason  = state['As_reason']
+        oksteel = As_long >= As_req
+        steel_badge = "badge" if oksteel else "badge bad"
+        st.markdown(
+            f'<span class="{steel_badge}">Ast required: {As_req:.0f} mm² '
+            f'({reason}); provided: {As_long:.0f} mm² → {"OK" if oksteel else "Increase steel"}</span>',
+            unsafe_allow_html=True
+        )
+        st.caption(
+            f"Limits used: As_min = {state['As_min']:.0f} mm² (0.8% of Ag = {state['Ag']:.0f} mm²). "
+            f"Strength-based Ast = {state['As_req_strength']:.0f} mm²."
+        )
 
     st.markdown("---")
 
@@ -499,6 +517,15 @@ def main():
         util_status = "✅ Biaxial PASS" if state['util'] <= 1.0 else "❌ Biaxial FAIL"
         st.markdown(f"**Utilization (Σ ≤ 1):** **{state['util']:.2f}** ({util_status})")
 
+        # Ast check inside biaxial section
+        st.markdown("**Ast Check (required vs provided)**")
+        oksteel = state['As_long'] >= state['As_req']
+        st.write(
+            f"Required Ast = **{state['As_req']:.0f} mm²** "
+            f"({state['As_reason']}); Provided = **{state['As_long']:.0f} mm²** "
+            f"→ {'✅ OK' if oksteel else '❌ Increase steel'}"
+        )
+
     with col_int_out:
         st.subheader("P–M Interaction Curves vs. Demand Point")
         fig_pmx = plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Mux_eff"], 'x')
@@ -520,6 +547,8 @@ def main():
         state["tie_dia"] = st.selectbox("Tie $\\phi$ (mm)", tie_options, index=tie_options.index(state["tie_dia"]), key='in_tdia_shear')
         leg_options_map = {"2-legged": 2, "4-legged": 4, "6-legged": 6}
         current_legs_str = f"{state.get('legs', 4)}-legged"
+        if current_legs_str not in leg_options_map:
+            current_legs_str = "4-legged"
         selected_legs_str = st.selectbox("Tie Legs ($A_{sv}$)", list(leg_options_map.keys()),
                                          index=list(leg_options_map.keys()).index(current_legs_str), key='in_legs')
         state["legs"] = leg_options_map[selected_legs_str]
@@ -554,8 +583,9 @@ def main():
     st.caption("This entire page is designed to be printed as a complete calculation sheet.")
 
     st.subheader("A. Key Design Inputs and Governing Results")
-    As_min = 0.008 * state["Ag"]
-    As_governing_req = max(As_min, state['As_long'] * (state.get("util", 1.0) ** (1/state.get("alpha", 1.0))))
+    As_min = state["As_min"]
+    As_governing_req = state["As_req"]
+    As_reason = state["As_reason"]
     out = {
         "Cross Section b × D (mm)": f"{b:.0f} × {D:.0f}",
         "Material fck / fy (MPa)": f"{state['fck']:.0f} / {state['fy']:.0f}",
@@ -565,8 +595,9 @@ def main():
         "Magnifiers $\\delta_x/\\delta_y$": f"{state['delta_x']:.2f} / {state['delta_y']:.2f}",
         "Uniaxial Capacity $M_{u,lim}$ (kNm)": f"{kNm(state['Mux_lim'])} / {kNm(state['Muy_lim'])}",
         "Biaxial Utilization (≤1)": f"{state['util']:.2f}",
-        "Ast Provided (mm²)": f"{state['As_long']:.0f}",
-        "Ast Governing Required (mm²)": f"{As_governing_req:.0f}",
+        "Ast Provided / Required (mm²)": f"{state['As_long']:.0f} / {As_governing_req:.0f}",
+        "Ast Controlling Criterion": As_reason,
+        "Min Ast (0.8%·Ag) (mm²)": f"{As_min:.0f}",
         "Concrete Shear $V_c$ (kN)": f"{kN(state['Vc'])}",
         "Tie Spacing Provided (mm)": f"Ø{state['tie_dia']:.0f} @ {state['tie_spacing']:.0f} (Legs: {state['legs']})",
         "Tie Spacing Governing Req (mm)": f"{state['s_governing_tie']:.0f}",
