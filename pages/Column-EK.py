@@ -34,7 +34,6 @@ def effective_length_factor(restraint: str) -> float:
 
 def moment_magnifier(Pu: float, le_mm: float, fck: float, Ic: float, Cm: float = 0.85, sway: bool = False) -> float:
     """Calculates moment magnification factor (Delta) based on IS 456 Cl. 39.7."""
-    # Effective Modulus of Elasticity (Short-term)
     Ec = 5000.0 * math.sqrt(max(fck, 1e-6))
     
     # Critical buckling load Pcr = (pi^2 * 0.4 * Ec * Ic) / (le^2) - IS 456 Cl. 39.7.1
@@ -46,10 +45,8 @@ def moment_magnifier(Pu: float, le_mm: float, fck: float, Ic: float, Cm: float =
     delta = 1.0 / max(1e-6, (1.0 - Pu / Pcr))
     
     if not sway:
-        # Non-sway (braced) moment magnifier Delta_b (Cm is always 0.85 for braced column with equal end moments)
         delta = max(1.0, Cm * delta)
     
-    # Clip delta to prevent excessively large values near Pcr
     return float(np.clip(delta, 1.0, 2.5) if not sway else np.clip(delta, 1.0, 5.0))
 
 def to_json_serializable(state: dict) -> dict:
@@ -84,7 +81,6 @@ def _generate_bar_layout(b: float, D: float, cover: float, state: dict) -> List[
     dia_top, dia_bot, dia_side = state["dia_top"], state["dia_bot"], state["dia_side"]
 
     bars_list = []
-    # Effective cover to the center of the bar (Cl. 26.5.3.1)
     max_dia = max(dia_top, dia_bot, dia_side)
     dx_corner = cover + state["tie_dia"] + max_dia / 2.0
     
@@ -129,8 +125,6 @@ def _uniaxial_capacity_Mu_for_Pu(b: float, D: float, bars: List[Tuple[float, flo
     
     def forces_and_moment(c: float):
         """Calculates total Axial Force (N) and Moment (M) for a given Neutral Axis Depth c."""
-        
-        # 1. Concrete compression force (Cc) - IS 456 Cl. 38.1 & 38.3
         xu_max = min(c, dimension)
         Cc = 0.36 * fck * dimension * xu_max
         arm_Cc = 0.5 * dimension - 0.42 * xu_max
@@ -138,11 +132,10 @@ def _uniaxial_capacity_Mu_for_Pu(b: float, D: float, bars: List[Tuple[float, flo
         
         Fs, Ms = 0.0, 0.0
         
-        # 2. Steel forces (Fs)
+        # Steel forces (Fs)
         for (x_abs, y_abs, dia) in bars:
             As = bar_area(dia)
-            # y is the distance from the extreme compression fiber to the bar center
-            y = (D - y_abs) if axis == 'x' else x_abs 
+            y = (D - y_abs) if axis == 'x' else x_abs # d' in compression zone
             
             # Strain at the steel level
             strain = EPS_CU * (1.0 - (y / max(c, 1e-6)))
@@ -154,29 +147,26 @@ def _uniaxial_capacity_Mu_for_Pu(b: float, D: float, bars: List[Tuple[float, flo
             # Distance from geometric center to the steel layer
             z = 0.5 * dimension - y 
             
-            Fs += force # Total steel force (compressive + tensile)
-            Ms += force * z # Total steel moment
+            Fs += force 
+            Ms += force * z
             
         return Cc + Fs, Mc + Ms
 
-    target = Pu # Target axial load
+    target = Pu 
     
-    # Binary search for the neutral axis depth 'c' that produces the target Pu
-    # Search range for c (from small tension to deep compression)
+    # Binary search for the neutral axis depth 'c'
     cL, cR = 0.01 * dimension, 1.50 * dimension 
     NL, ML = forces_and_moment(cL)
     NR, MR = forces_and_moment(cR)
 
-    # Handle edge cases (pure tension or pure compression)
     if target <= NL: return ML 
     if target >= NR: return MR 
 
-    # Perform binary search
     for _ in range(60): 
         cm = 0.5 * (cL + cR)
         Nm, Mm = forces_and_moment(cm)
         
-        if abs(Nm - target) < 1.0: # Tolerance of 1 N
+        if abs(Nm - target) < 1.0: 
             return float(Mm)
         
         if (NL - target) * (Nm - target) <= 0:
@@ -189,16 +179,13 @@ def _uniaxial_capacity_Mu_for_Pu(b: float, D: float, bars: List[Tuple[float, flo
 def biaxial_utilization(b: float, D: float, bars: List[Tuple[float, float, float]], fck: float, fy: float, Pu: float, Mux_eff: float, Muy_eff: float, alpha: float) -> Tuple[float, float, float]:
     """Performs the biaxial interaction check using the Power Law (IS 456 Annex G)."""
     
-    # 1. Find rigorous uniaxial capacities for the given Pu
     Mux_lim = _uniaxial_capacity_Mu_for_Pu(b, D, bars, fck, fy, Pu, axis='x')
     Muy_lim = _uniaxial_capacity_Mu_for_Pu(b, D, bars, fck, fy, Pu, axis='y')
     
-    # Ensure non-zero divisor
     Mux_lim = max(Mux_lim, 1e-3) if abs(Mux_eff) > 1e-3 else Mux_lim
     Muy_lim = max(Muy_lim, 1e-3) if abs(Muy_eff) > 1e-3 else Muy_lim
         
-    # 2. Calculate Utilization (Power Law Interaction Equation)
-    # (Mux_eff / Mux_lim)^alpha + (Muy_eff / Muy_lim)^alpha <= 1.0
+    # Power Law Interaction Equation
     Rx = (abs(Mux_eff) / Mux_lim) ** alpha
     Ry = (abs(Muy_eff) / Muy_lim) ** alpha
     util = Rx + Ry
@@ -214,7 +201,7 @@ def plotly_cross_section(b: float, D: float, cover: float, bars: List[Tuple[floa
     # Concrete Outline
     fig.add_shape(type="rect", x0=0, y0=0, x1=b, y1=D, line=dict(color="black", width=2), fillcolor="rgba(240, 240, 240, 0.8)"))
     
-    # Effective Cover Boundary (Indicates Tie placement area)
+    # Effective Cover Boundary
     effective_cover = cover + tie_dia
     fig.add_shape(type="rect", x0=effective_cover, y0=effective_cover, x1=b - effective_cover, y1=D - effective_cover, 
                   line=dict(color="gray", width=1, dash="dot"), fillcolor="rgba(0,0,0,0)"))
@@ -235,8 +222,8 @@ def plotly_cross_section(b: float, D: float, cover: float, bars: List[Tuple[floa
     fig.add_annotation(x=b/2, y=D + 10, text=f"Ties: Ø{int(tie_dia)} @ {int(tie_spacing)} mm",
                        showarrow=False, yanchor="bottom")
                        
-    fig.update_layout(title=f"Cross Section (b={b:.0f} x D={D:.0f} mm)", width=400, 
-                      height=400 * D / b if b != 0 else 400, 
+    fig.update_layout(title=f"Cross Section (b={b:.0f} x D={D:.0f} mm)", 
+                      width=400, height=400 * D / b if b != 0 else 400, 
                       showlegend=False, hovermode="closest", plot_bgcolor='white', 
                       yaxis_scaleanchor="x", yaxis_scaleratio=1,
                       xaxis_title="Width b (mm)", yaxis_title="Depth D (mm)")
@@ -246,12 +233,10 @@ def plot_pm_curve_plotly(b: float, D: float, bars: List[Tuple[float, float, floa
     """Generates a Plotly P-M interaction curve for a given axis (x or y)."""
     dimension = D if axis == 'x' else b
     
-    # Generate points across a range of Neutral Axis depths (c)
     cs = np.linspace(0.01 * dimension, 1.50 * dimension, 120)
     P_list, M_list = [], []
     
     for c in cs:
-        # Reuse the core logic from _uniaxial_capacity_Mu_for_Pu
         Cc = 0.36 * fck * dimension * min(c, dimension)
         xu_max = min(c, dimension)
         arm_Cc = 0.5 * dimension - 0.42 * xu_max
@@ -273,7 +258,6 @@ def plot_pm_curve_plotly(b: float, D: float, bars: List[Tuple[float, float, floa
     df = pd.DataFrame({'P (kN)': np.array(P_list)/1e3, f'M_{axis} (kNm)': np.array(M_list)/1e6})
     
     fig = go.Figure()
-    # P-M Capacity Envelope
     fig.add_trace(go.Scatter(x=df['P (kN)'], y=df[f'M_{axis} (kNm)'], mode='lines', 
                              name='Capacity Envelope', line=dict(color='#0a66c2', width=3)))
                              
@@ -290,23 +274,18 @@ def plot_pm_curve_plotly(b: float, D: float, bars: List[Tuple[float, float, floa
                       plot_bgcolor='white')
     return fig
 
-# ------------------------- 4. MAIN CALCULATIONS -------------------------
+# ------------------------- 4. CORE CALCULATIONS -------------------------
 
 def initialize_state():
     """Initializes default session state variables."""
     if "state" not in st.session_state:
         st.session_state.state = {
-            # Geometry & Material
             "b": 450.0, "D": 600.0, "cover": 40.0, "fck": 30.0, "fy": 500.0,
-            # Loads
             "Pu": 1200e3, "Mux": 120e6, "Muy": 80e6, "Vu": 150e3,
-            # Slenderness & Restraints
             "storey_clear": 3200.0, "restraint": "Pinned-Pinned", "sway": False,
-            # Reinforcement
             "n_top": 3, "n_bot": 3, "n_left": 2, "n_right": 2, 
             "dia_top": 16.0, "dia_bot": 16.0, "dia_side": 12.0, "tie_dia": 8.0, "tie_spacing": 150.0,
             "legs": 4, 
-            # Calculated Results
             "alpha": 1.0, "bars": [], "util": 0.0, "Vc": 0.0, "Vus": 0.0, "Ag": 0.0
         }
 
@@ -330,15 +309,12 @@ def recalculate_properties(state):
     k_factor = effective_length_factor(state["restraint"])
     le_x, le_y = k_factor * lo, k_factor * lo
     lam_x, lam_y = le_x / max(rx, 1e-6), le_y / max(ry, 1e-6)
-    
-    # Slender if le/D (or le/b) > 12.0 (IS 456 Cl. 25.1.2)
     short_x = lam_x <= 12.0
     short_y = lam_y <= 12.0
     
-    # Mux & Muy are checked against min eccentricity requirements first
     emin_x = max(lo/500.0 + D/30.0, 20.0)
     emin_y = max(lo/500.0 + b/30.0, 20.0)
-    Mux_base = max(abs(Mux), abs(Pu * emin_x / 1000.0)) # Note: emin is in mm
+    Mux_base = max(abs(Mux), abs(Pu * emin_x / 1000.0))
     Muy_base = max(abs(Muy), abs(Pu * emin_y / 1000.0))
     
     delta_x = moment_magnifier(Pu, le_x, fck, Ic_x, sway=state["sway"]) if not short_x else 1.0
@@ -351,54 +327,47 @@ def recalculate_properties(state):
                       delta_x=delta_x, delta_y=delta_y, Mux_base=Mux_base, Muy_base=Muy_base,
                       Mux_eff=Mux_eff, Muy_eff=Muy_eff, emin_x=emin_x, emin_y=emin_y))
     
-    # 3. Biaxial Utilization (Strain Compatibility + Power Law)
+    # 3. Biaxial Utilization
     util, Mux_lim, Muy_lim = biaxial_utilization(b, D, bars, fck, fy, Pu, Mux_eff, Muy_eff, state["alpha"])
     state.update(dict(Mux_lim=Mux_lim, Muy_lim=Muy_lim, util=util))
 
-    # 4. Shear Design (IS 456 Cl. 40)
+    # 4. Shear Design
     max_long_dia = max([bar[2] for bar in bars], default=16.0)
-    d_eff = D - (cover + state["tie_dia"] + 0.5 * max_long_dia) # Effective depth in D direction
+    d_eff = D - (cover + state["tie_dia"] + 0.5 * max_long_dia) 
     
-    # Axial Load Factor (phi_N) - IS 456, Cl. 40.2.2.1
     phiN = float(np.clip(1.0 + (Pu / max(1.0, (0.25 * fck * Ag))), 0.5, 1.5))
-    
-    # Nominal shear strength of concrete (simplified tau_c approximation for Vc check)
     tau_c_base = 0.62 * math.sqrt(fck) / 1.0 
-    Vc = tau_c_base * b * d_eff * phiN # Apply phiN (Vc is in N)
+    Vc = tau_c_base * b * d_eff * phiN 
     
-    Vus = max(0.0, Vu - Vc) # Required shear reinforcement capacity
+    Vus = max(0.0, Vu - Vc) 
     state.update(dict(Vc=Vc, Vus=Vus, phiN=phiN, d_eff=d_eff))
 
-    # 5. Tie Spacing Requirements (IS 456 Cl. 26.5.3.2 and IS 13920 Cl. 7.4.7)
+    # 5. Tie Spacing Requirements 
     Asv = state["legs"] * bar_area(state["tie_dia"])
     
-    # Spacing required for shear (s = 0.87 * fy * Asv * d_eff / Vus)
     s_required_shear = (0.87 * fy * Asv * d_eff) / max(Vus, 1e-6) if Vus > 0 else 300.0
-    
-    # Detailing caps (IS 456 Cl. 26.5.3.2)
     s_cap_detailing = min(16.0 * max_long_dia, min(b, D), 300.0)
-    
-    # IS 13920 confinement zone limit (Cl. 7.4.7)
     s_13920_confine = min(min(b,D) / 4.0, 100.0)
-    
     s_governing_tie = min(s_cap_detailing, s_required_shear)
+    
     state.update({"s_required_shear": s_required_shear, "s_cap_detailing": s_cap_detailing, 
                   "s_13920_confine": s_13920_confine, "s_governing_tie": s_governing_tie})
     
     return b, D, cover, bars, Ag
 
-# ------------------------- 5. STREAMLIT APP -------------------------
+# ------------------------- 5. STREAMLIT APP LAYOUT -------------------------
 
 def main():
     st.set_page_config(page_title="RCC Column (Biaxial) Designer", layout="wide")
     st.markdown("""
         <style>
+        /* Styles for print and highlighting */
         .highlight {
             background: #fff8e1; /* Lighter yellow for emphasis */
             border: 2px solid #ffcc80; 
             border-radius: 12px;
             padding: 10px 15px;
-            margin: 10px 0;
+            margin: 10px 0 20px 0;
         }
         .highlight .stSelectbox, .highlight .stNumberInput {
             background: #fffceb !important;
@@ -413,14 +382,14 @@ def main():
         </style>
         """, unsafe_allow_html=True)
     
-    st.title("🧱 RCC Column Design — Biaxial Moments $\pm$ Axial $\pm$ Shear (IS 456/13920)")
-    st.caption("Detailed design using **Strain Compatibility** for Biaxial $P-M$ Check and **Moment Magnification** for Slenderness.")
+    st.title("🧱 RCC Column Designer — Single Canvas Output")
+    st.caption("Integrated Biaxial $P-M$ and Shear Design (IS 456/13920). All calculations and inputs are below for a complete, printable report.")
     st.markdown("---")
 
     initialize_state()
     state = st.session_state.state
     
-    # --- Data Management (Always accessible) ---
+    # --- Data Management ---
     c_data_up, c_data_down = st.columns(2)
     with c_data_up:
         uploaded_file = st.file_uploader("Upload Saved Design State (JSON)", type="json")
@@ -438,274 +407,222 @@ def main():
             st.markdown(get_json_download_link(to_json_serializable(state), "column_design_state.json"), unsafe_allow_html=True)
             
     st.markdown("---")
+
+    # --- INPUT SECTION: GEOMETRY, MATERIALS, LOADS (STEP 1) ---
+    st.header("1️⃣ Geometry, Materials, and Factored Loads")
     
-    # --- TABS FOR WORKFLOW ---
-    T1, T2, T3, T4, T5, T6, T7 = st.tabs([
-        "1. Geometry & Materials", 
-        "2. Longitudinal Rebar", 
-        "3. Slenderness & Moments", 
-        "4. Biaxial Interaction", 
-        "5. Shear & Ties", 
-        "6. Ductile Detailing", 
-        "7. Final Report"
-    ])
+    col1, col2, col3 = st.columns(3)
     
-    # --- T1: Geometry & Materials ---
-    with T1:
-        st.header("1️⃣ Geometry, Materials, and Loads")
-        st.markdown("Define the section dimensions, concrete/steel grades, and factored design loads.")
+    with col1:
+        st.subheader("Section Geometry")
+        st.markdown('<div class="highlight">', unsafe_allow_html=True)
+        state["b"] = st.number_input("Width $b$ (mm)", 200.0, 2000.0, state["b"], 25.0, key='in_b')
+        state["D"] = st.number_input("Depth $D$ (mm)", 200.0, 3000.0, state["D"], 25.0, key='in_D')
+        state["cover"] = st.number_input("Clear Cover (mm)", 20.0, 75.0, state["cover"], 5.0, key='in_cover')
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col2:
+        st.subheader("Material Properties")
+        st.markdown('<div class="highlight">', unsafe_allow_html=True)
+        state["fck"] = st.number_input("$f_{ck}$ (MPa, M-Grade)", 20.0, 80.0, state["fck"], 1.0, key='in_fck')
+        state["fy"] = st.number_input("$f_{y}$ (MPa, Fe-Grade)", 415.0, 600.0, state["fy"], 5.0, key='in_fy')
+        st.markdown('</div>', unsafe_allow_html=True)
         
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.subheader("Section Geometry")
-            st.markdown('<div class="highlight">', unsafe_allow_html=True)
-            state["b"] = st.number_input("Width $b$ (mm)", 200.0, 2000.0, state["b"], 25.0, key='in_b')
-            state["D"] = st.number_input("Depth $D$ (mm)", 200.0, 3000.0, state["D"], 25.0, key='in_D')
-            state["cover"] = st.number_input("Clear Cover (mm)", 20.0, 75.0, state["cover"], 5.0, key='in_cover')
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with c2:
-            st.subheader("Material Properties")
-            st.markdown('<div class="highlight">', unsafe_allow_html=True)
-            state["fck"] = st.number_input("$f_{ck}$ (MPa, M-Grade)", 20.0, 80.0, state["fck"], 1.0, key='in_fck')
-            state["fy"] = st.number_input("$f_{y}$ (MPa, Fe-Grade)", 415.0, 600.0, state["fy"], 5.0, key='in_fy')
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-        with c3:
-            st.subheader("Factored Loads")
-            st.markdown("Inputs are in kN and kNm, converted to N and Nmm internally.")
-            st.markdown('<div class="highlight">', unsafe_allow_html=True)
-            state["Pu"] = st.number_input("Axial Load $P_u$ (kN, +comp)", -3000.0, 6000.0, state["Pu"] / 1e3, 10.0, key='in_Pu') * 1e3
-            state["Mux"] = st.number_input("Moment $M_{ux}$ (kNm)", -2000.0, 2000.0, state["Mux"] / 1e6, 5.0, key='in_Mux') * 1e6
-            state["Muy"] = st.number_input("Moment $M_{uy}$ (kNm)", -2000.0, 2000.0, state["Muy"] / 1e6, 5.0, key='in_Muy') * 1e6
-            state["Vu"] = st.number_input("Shear $V_u$ (kN)", 0.0, 5000.0, state["Vu"] / 1e3, 5.0, key='in_Vu') * 1e3
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-    # --- T2: Longitudinal Rebar ---
-    with T2:
-        st.header("2️⃣ Longitudinal Reinforcement Arrangement")
-        st.markdown("Define the bar sizes and count for the perimeter layout. Corner bars are automatically handled.")
-
-        cL1, cL2, cL3 = st.columns(3)
-        bar_options = [12.0, 16.0, 20.0, 25.0, 28.0, 32.0]
+    with col3:
+        st.subheader("Factored Loads")
+        st.markdown("Inputs for $P_u$ (kN), $M_u$ (kNm), $V_u$ (kN)")
+        st.markdown('<div class="highlight">', unsafe_allow_html=True)
+        state["Pu"] = st.number_input("Axial Load $P_u$ (kN)", -3000.0, 6000.0, state["Pu"] / 1e3, 10.0, key='in_Pu') * 1e3
+        state["Mux"] = st.number_input("Moment $M_{ux}$ (kNm)", -2000.0, 2000.0, state["Mux"] / 1e6, 5.0, key='in_Mux') * 1e6
+        state["Muy"] = st.number_input("Moment $M_{uy}$ (kNm)", -2000.0, 2000.0, state["Muy"] / 1e6, 5.0, key='in_Muy') * 1e6
+        state["Vu"] = st.number_input("Shear $V_u$ (kN)", 0.0, 5000.0, state["Vu"] / 1e3, 5.0, key='in_Vu') * 1e3
+        st.markdown('</div>', unsafe_allow_html=True)
         
-        with cL1:
-            st.subheader("Bar Counts")
-            st.markdown('<div class="highlight">', unsafe_allow_html=True)
-            state["n_top"] = st.number_input("Top row bars ($n_{top}$)", 0, 10, state["n_top"], 1, key='in_ntop')
-            state["n_bot"] = st.number_input("Bottom row bars ($n_{bot}$)", 0, 10, state["n_bot"], 1, key='in_nbot')
-            state["n_left"] = st.number_input("Left column bars ($n_{left}$)", 0, 10, state["n_left"], 1, key='in_nleft')
-            state["n_right"] = st.number_input("Right column bars ($n_{right}$)", 0, 10, state["n_right"], 1, key='in_nright')
-            st.markdown('</div>', unsafe_allow_html=True)
+    b, D, cover, bars, Ag = recalculate_properties(state)
+    st.markdown("---")
+    st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
+
+    # --- INPUT SECTION: LONGITUDINAL REBAR & SLENDERNESS (STEP 2 & 3) ---
+    st.header("2️⃣ Reinforcement and Slenderness Setup")
+    
+    col_r1, col_r2, col_r3 = st.columns(3)
+    bar_options = [12.0, 16.0, 20.0, 25.0, 28.0, 32.0]
+    
+    with col_r1:
+        st.subheader("Longitudinal Bar Counts")
+        st.markdown('<div class="highlight">', unsafe_allow_html=True)
+        state["n_top"] = st.number_input("Top row bars ($n_{top}$)", 0, 10, state["n_top"], 1, key='in_ntop')
+        state["n_bot"] = st.number_input("Bottom row bars ($n_{bot}$)", 0, 10, state["n_bot"], 1, key='in_nbot')
+        state["n_left"] = st.number_input("Left column bars ($n_{left}$)", 0, 10, state["n_left"], 1, key='in_nleft')
+        state["n_right"] = st.number_input("Right column bars ($n_{right}$)", 0, 10, state["n_right"], 1, key='in_nright')
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col_r2:
+        st.subheader("Bar Diameters & Layout")
+        st.markdown('<div class="highlight">', unsafe_allow_html=True)
+        state["dia_top"] = st.selectbox("Top bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_top"]), key='in_dtop')
+        state["dia_bot"] = st.selectbox("Bottom bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_bot"]), key='in_dbot')
+        state["dia_side"] = st.selectbox("Side bar $\\phi$ (mm)", bar_options[:-1], index=bar_options[:-1].index(state["dia_side"]), key='in_dside')
+        st.markdown(f"**$A_{{st}}$ Provided:** **{state['As_long']:.0f} mm$^2$** ({state['As_long'] * 100 / Ag:.2f}% $\\rho$)")
+        st.markdown('</div>', unsafe_allow_html=True)
         
-        with cL2:
-            st.subheader("Bar Diameters")
-            st.markdown('<div class="highlight">', unsafe_allow_html=True)
-            state["dia_top"] = st.selectbox("Top bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_top"]), key='in_dtop')
-            state["dia_bot"] = st.selectbox("Bottom bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_bot"]), key='in_dbot')
-            state["dia_side"] = st.selectbox("Side bar $\\phi$ (mm)", bar_options[:-1], index=bar_options[:-1].index(state["dia_side"]), key='in_dside')
-            st.markdown('</div>', unsafe_allow_html=True)
+    with col_r3:
+        st.subheader("Section Sketch")
+        st.plotly_chart(plotly_cross_section(b, D, cover, bars, state['tie_dia'], state['tie_spacing']), use_container_width=True)
 
-        with cL3:
-            st.subheader("Section Sketch")
-            # --- RUN ALL CALCULATIONS (Needed here for plot) ---
-            b, D, cover, bars, Ag = recalculate_properties(state)
-            
-            st.markdown(f"**Total Area ($A_{{st}}$):** **{state['As_long']:.0f} mm$^2$** ({state['As_long'] * 100 / Ag:.2f}% $\\rho$)")
-            st.plotly_chart(plotly_cross_section(b, D, cover, bars, state['tie_dia'], state['tie_spacing']), use_container_width=True)
-
-    # --- T3: Slenderness & Moments ---
-    with T3:
-        st.header("3️⃣ Slenderness Effects and Moment Magnification")
+    st.markdown("---")
+    
+    # --- CALCULATION SECTION: SLENDERNESS & MAGNIFICATION (STEP 3) ---
+    st.header("3️⃣ Slenderness Effects and Magnified Moments")
+    
+    col_sl_in, col_sl_out = st.columns(2)
+    
+    with col_sl_in:
+        st.subheader("Slenderness Inputs (IS 456 Cl. 25.1)")
+        st.markdown('<div class="highlight">', unsafe_allow_html=True)
+        state["storey_clear"] = st.number_input("Clear Storey Height $l_0$ (mm)", 2000.0, 6000.0, state["storey_clear"], 50.0, key='in_l0')
+        restraint_options = ["Fixed-Fixed", "Fixed-Pinned", "Pinned-Pinned", "Fixed-Free (cantilever)"]
+        state["restraint"] = st.selectbox("End Restraint (for $k$ factor)", restraint_options, index=restraint_options.index(state["restraint"]), key='in_restraint')
+        state["sway"] = st.checkbox("Check for Sway Frame (Moment Magnification)", value=state["sway"], key='in_sway')
+        k_factor = effective_length_factor(state["restraint"])
+        st.markdown(f"Calculated **$k$ Factor**: **{k_factor:.2f}**")
+        st.markdown('</div>', unsafe_allow_html=True)
         
-        col_sl1, col_sl2 = st.columns(2)
-        with col_sl1:
-            st.subheader("Slenderness Inputs (IS 456 Cl. 25.1)")
-            st.markdown('<div class="highlight">', unsafe_allow_html=True)
-            state["storey_clear"] = st.number_input("Clear Storey Height $l_0$ (mm)", 2000.0, 6000.0, state["storey_clear"], 50.0, key='in_l0')
-            restraint_options = ["Fixed-Fixed", "Fixed-Pinned", "Pinned-Pinned", "Fixed-Free (cantilever)"]
-            state["restraint"] = st.selectbox("End Restraint", restraint_options, index=restraint_options.index(state["restraint"]), key='in_restraint')
-            state["sway"] = st.checkbox("Sway Frame? (Yes/No)", value=state["sway"], key='in_sway')
-            k_factor = effective_length_factor(state["restraint"])
-            st.markdown(f"Calculated **$k$ Factor**: **{k_factor:.2f}**")
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-        b, D, cover, bars, Ag = recalculate_properties(state) # Re-run calculations
+    b, D, cover, bars, Ag = recalculate_properties(state) 
+    
+    with col_sl_out:
+        st.subheader("Slenderness and Magnification Check")
+        st.markdown(f"**Slenderness Check (IS 456 Cl. 25.1.2):** Column is **{'Short' if state['short_x'] and state['short_y'] else 'Slender'}**.")
+        st.metric(f"Eff. Length $l_{{e,x}}$ (mm) / $\lambda_x$", f"{state['le_x']:.0f} / {state['lam_x']:.1f}")
+        st.metric(f"Eff. $M_{{ux,eff}}$ (kNm) ($\delta_x={state['delta_x']:.2f}$)", f"{kNm(state['Mux_eff'])}")
+        st.metric(f"Eff. $M_{{uy,eff}}$ (kNm) ($\delta_y={state['delta_y']:.2f}$)", f"{kNm(state['Muy_eff'])}")
+
+    st.markdown("#### Calculation Narration (Slenderness)")
+    st.write(f"The column is classified as short if $\\lambda_{{x}} = l_{{e,x}}/r_{{x}} \le 12$. The slenderness $\\lambda_x$ is **{state['lam_x']:.1f}**. Since $\\lambda_x > 12$ (or $\\lambda_y > 12$), secondary moments must be accounted for by the moment magnification factor $\\delta$ (IS 456 Cl. 39.7).")
+    st.latex(r"""
+    M_{u,eff} = M_{u,base} \times \delta \quad \text{where } \delta = \frac{C_m}{1 - P_u/P_{cr}}
+    """)
+    st.markdown("---")
+    st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
+
+    # --- CALCULATION SECTION: BIAXIAL INTERACTION (STEP 4) ---
+    st.header("4️⃣ Biaxial Interaction Strength Check")
+    st.write("Strength is verified using the **Strain Compatibility** approach to find rigorous uniaxial capacities ($M_{u,lim}$) for the given $P_u$, followed by the **Power Law** interaction formula (IS 456 Annex G).")
+
+    col_int_in, col_int_out = st.columns([1, 2])
+    
+    with col_int_in:
+        st.subheader("Interaction Parameter")
+        st.markdown('<div class="highlight">', unsafe_allow_html=True)
+        state["alpha"] = st.slider("Interaction Exponent $\\alpha$ (IS 456 Annex G)", 0.8, 2.0, state["alpha"], 0.1, key='in_alpha_check')
+        st.markdown('</div>', unsafe_allow_html=True)
         
-        with col_sl2:
-            st.subheader("Slenderness Check (IS 456 Cl. 25.1.2)")
-            st.markdown('<div class="highlight">', unsafe_allow_html=True)
-            st.metric(f"Effective Length $l_{{e,x}}$ (mm)", f"{state['le_x']:.0f}")
-            st.metric(f"Slenderness $\\lambda_x$", f"{state['lam_x']:.1f} ($\le 12$ for Short) → **{'Short' if state['short_x'] else 'Slender'}**")
-            st.metric(f"Magnifier $\\delta_x$", f"{state['delta_x']:.2f}")
-            st.markdown('</div>', unsafe_allow_html=True)
-            st.subheader("Magnified Design Moments (IS 456 Cl. 39.7)")
-            st.markdown(f"Moments are checked against minimum eccentricity $e_{{min}}$ ({state['emin_x']:.0f} mm, {state['emin_y']:.0f} mm) before magnification.")
-            st.metric("Effective $M_{ux,eff}$ (kNm)", f"{kNm(state['Mux_eff'])}")
-            st.metric("Effective $M_{uy,eff}$ (kNm)", f"{kNm(state['Muy_eff'])}")
-
-        st.markdown("---")
-        st.markdown("#### Detailed Calculation Narrative")
-        st.latex(r"""
-        \text{Critical Buckling Load: } P_{cr} = \frac{\pi^2 E_c I_{c}}{l_e^2} \times 0.4 \quad (\text{IS 456 Cl. 39.7.1})
-        """)
-        st.latex(r"""
-        \text{Moment Magnifier: } \delta = \frac{C_m}{1 - P_u/P_{cr}} \ge 1.0 \quad (\text{IS 456 Cl. 39.7.1})
-        """)
-        st.write(f"The maximum required moments, considering both design loads and minimum eccentricity, are magnified by $\\delta_x$ and $\\delta_y$ to account for secondary moments ($P\Delta$ effects).")
-
-    # --- T4: Biaxial Interaction ---
-    with T4:
-        st.header("4️⃣ Biaxial Interaction Check (Strength)")
-        st.markdown("The most rigorous check uses **Strain Compatibility** to determine uniaxial capacities ($M_{u,lim}$) for the given $P_u$, followed by the **Power Law** interaction formula (IS 456 Annex G).")
-
-        col_int1, col_int2 = st.columns(2)
-        with col_int1:
-            st.subheader("Interaction Parameters")
-            st.markdown('<div class="highlight">', unsafe_allow_html=True)
-            # Power law exponent alpha depends on Pu/Puz. Here we let the user define it.
-            state["alpha"] = st.slider("Interaction Exponent $\\alpha$ (IS 456 Annex G)", 0.8, 2.0, state["alpha"], 0.1, key='in_alpha_check')
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            st.subheader("Biaxial Check Result")
-            st.latex(r"\left(\frac{M_{ux,eff}}{M_{ux,lim}}\right)^{\alpha} + \left(\frac{M_{uy,eff}}{M_{uy,lim}}\right)^{\alpha} \le 1.0")
-
-            b, D, cover, bars, Ag = recalculate_properties(state) # Final run to get interaction results
-
-            st.metric("Uniaxial $M_{ux,lim}$ (kNm)", f"{kNm(state['Mux_lim'])}")
-            st.metric("Uniaxial $M_{uy,lim}$ (kNm)", f"{kNm(state['Muy_lim'])}")
-            util_status = "✅ Biaxial PASS" if state['util'] <= 1.0 else "❌ Biaxial FAIL"
-            st.markdown(f"**Utilization (Σ $\le 1$):** **{state['util']:.2f}** ({util_status})")
-            
-        with col_int2:
-            st.subheader("P–M Interaction Curves")
-            st.plotly_chart(plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Mux_eff"], 'x'), use_container_width=True)
-            st.plotly_chart(plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Muy_eff"], 'y'), use_container_width=True)
-
-        st.markdown("---")
-        st.markdown("#### Detailed Calculation Narrative")
-        st.write("The software determines $M_{u,lim}$ for the given $P_u$ by iteratively solving for the neutral axis depth ($c$) using the non-linear stress-strain relationships of concrete and steel (Strain Compatibility) prescribed in IS 456.")
-        st.write("The axial load is checked against the ultimate pure compression capacity ($P_{uz}$) as part of the curve generation, ensuring the design point is within the entire capacity envelope.")
-
-    # --- T5: Shear & Ties ---
-    with T5:
-        st.header("5️⃣ Shear and Tie Design (IS 456 Cl. 40)")
-
-        col_sh1, col_sh2, col_sh3 = st.columns(3)
-        tie_options = [6.0, 8.0, 10.0, 12.0]
+        st.subheader("Biaxial Check Result")
+        st.latex(r"\left(\frac{M_{ux,eff}}{M_{ux,lim}}\right)^{\alpha} + \left(\frac{M_{uy,eff}}{M_{uy,lim}}\right)^{\alpha} \le 1.0")
         
-        with col_sh1:
-            st.subheader("Tie Properties")
-            st.markdown('<div class="highlight">', unsafe_allow_html=True)
-            state["tie_dia"] = st.selectbox("Tie $\\phi$ (mm)", tie_options, index=tie_options.index(state["tie_dia"]), key='in_tdia_shear')
-            leg_options_map = {"2-legged": 2, "4-legged": 4, "6-legged": 6}
-            current_legs_str = f"{state.get('legs', 4)}-legged"
-            selected_legs_str = st.selectbox("Tie Legs ($A_{sv}$)", list(leg_options_map.keys()), index=list(leg_options_map.keys()).index(current_legs_str), key='in_legs')
-            state["legs"] = leg_options_map[selected_legs_str]
-            state["tie_spacing"] = st.number_input("Tie Spacing $s$ (mm) Provided", 50.0, 300.0, state["tie_spacing"], 5.0, key='in_ts_prov')
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-        b, D, cover, bars, Ag = recalculate_properties(state) # Re-run calculations
-
-        with col_sh2:
-            st.subheader("Capacity Check")
-            st.metric("Axial Load Factor $\\phi_N$", f"{state['phiN']:.2f}")
-            st.metric("Concrete Capacity $V_c$ (kN)", f"{kN(state['Vc'])}")
-            st.metric("Required Steel Capacity $V_{us}$ (kN)", f"{kN(state['Vus'])}")
-            
-        with col_sh3:
-            st.subheader("Spacing Check")
-            st.metric("Shear Required $s$ (mm)", f"{state['s_required_shear']:.0f}")
-            st.metric("Detailing Cap $s$ (mm)", f"{state['s_cap_detailing']:.0f}")
-            
-            s_status = "✅ Spacing PASS" if state["tie_spacing"] <= state["s_governing_tie"] else "❌ Spacing FAIL"
-            st.markdown(f"**Governing $s$ $\le$ {state['s_governing_tie']:.0f} mm:** **({s_status})**")
-            
-        st.markdown("---")
-        st.markdown("#### Detailed Calculation Narrative")
-        st.write("The column's shear capacity from concrete ($V_c$) is enhanced by the presence of axial compression, accounted for by the Axial Load Factor $\\phi_N$ (IS 456 Cl. 40.2.2.1).")
-        st.latex(r"\phi_N = 1.0 + \frac{P_u}{0.25 f_{ck} A_g} \le 1.5")
-        st.latex(r"V_{us} = V_u - V_c \quad \text{where } V_c \propto \phi_N")
-        st.latex(r"\text{Required Spacing } s = \frac{0.87 f_y A_{sv} d}{V_{us}} \le \min(16\phi_{long}, \min(b,D), 300 \text{ mm})")
-
-    # --- T6: Ductile Detailing ---
-    with T6:
-        st.header("6️⃣ Ductile Detailing Aide (IS 13920:2016)")
-        st.markdown("This tab provides detailing guidance, especially for zones requiring confinement (e.g., in seismic regions).")
-
-        db_long = max([bar[2] for bar in bars], default=state['dia_top'])
-        lo = max(state['D'], state['b'], state['storey_clear']/6.0, 450.0)
-
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            st.subheader("Confinement Zone (IS 13920 Cl. 7.4.2)")
-            st.write("The confinement length ($l_0$) is required at both top and bottom ends of the column.")
-            st.latex(r"l_0 \ge \max(D, b, L_{clear}/6, 450 \text{ mm})")
-            st.metric("Confinement Length $l_0$ (mm)", f"{lo:.0f} mm")
-
-            st.subheader("Spacing in Confinement Zone (IS 13920 Cl. 7.4.7)")
-            st.metric("Spacing Limit $s_{conf}$ (mm)", f"{state['s_13920_confine']:.0f} mm")
-            
-        with col_d2:
-            st.subheader("Key Detailing Notes")
-            st.markdown(f"""
-            * **Hoop Spacing in $l_0$ (Confinement Zone):** Ties must not exceed **{state['s_13920_confine']:.0f} mm**
-            * **Hoop Spacing Outside $l_0$:** Spacing must not exceed $\min(16\phi_{long}, 300)$ $\le$ **{state['s_cap_detailing']:.0f} mm**
-            * **Hooks:** Use **135° hooks** with an extension of $10\phi$ (but not less than 75 mm)
-            * **Splices:** Lap splices should be provided only in the **middle half** of the member height and **must not be provided** within the confinement length $l_0$
-            """)
-            
-    # --- T7: Final Report ---
-    with T7:
-        st.header("7️⃣ Submission-Ready Report Summary")
-        st.caption("All calculation details and figures below are ready for print (use browser's Print function or Ctrl/Cmd + P).")
-        st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
-
-        # 1. Inputs & Outputs Table
-        st.subheader("A. Design Inputs and Governing Results")
+        st.metric("Uniaxial $M_{ux,lim}$ (kNm)", f"{kNm(state['Mux_lim'])}")
+        st.metric("Uniaxial $M_{uy,lim}$ (kNm)", f"{kNm(state['Muy_lim'])}")
+        util_status = "✅ Biaxial PASS" if state['util'] <= 1.0 else "❌ Biaxial FAIL"
+        st.markdown(f"**Utilization (Σ $\le 1$):** **{state['util']:.2f}** ({util_status})")
         
-        As_min = 0.008 * Ag 
-        As_governing_req = max(As_min, state['As_long'] * (state.get("util", 1.0) ** (1/state.get("alpha", 1.0))))
-
-        out = {
-            "Cross Section b x D (mm)": f"{b:.0f} x {D:.0f}", 
-            "Material fck / fy (MPa)": f"{state['fck']:.0f} / {state['fy']:.0f}",
-            "Design Pu (kN)": state["Pu"] / 1e3, 
-            "Design Mux,eff / Muy,eff (kNm)": f"{kNm(state['Mux_eff'])} / {kNm(state['Muy_eff'])}",
-            "Slenderness λx / λy": f"{state['lam_x']:.1f} / {state['lam_y']:.1f} ({'Short' if state['short_x'] else 'Slender'})", 
-            "Magnifiers δx / δy": f"{state['delta_x']:.2f} / {state['delta_y']:.2f}", 
-            "Uniaxial Capacity Mux,lim / Muy,lim (kNm)": f"{kNm(state['Mux_lim'])} / {kNm(state['Muy_lim'])}",
-            "Biaxial Utilization (≤1)": f"**{state['util']:.2f}**",
-            "Ast Provided (mm²)": f"{state['As_long']:.0f}",
-            "Ast Governing Required (mm²)": f"{As_governing_req:.0f}",
-            "Concrete Shear Vc (kN)": f"{kN(state['Vc'])}",
-            "Tie Spacing Provided (mm)": f"{state['tie_spacing']:.0f}",
-            "Tie Spacing Governing Req (mm)": f"{state['s_governing_tie']:.0f}",
-            "13920 Confined Zone Spacing Limit (mm)": f"{state['s_13920_confine']:.0f}"
-        }
-
-        df_out = pd.DataFrame({"Parameter": list(out.keys()), "Value": list(out.values())})
-        st.dataframe(df_out, use_container_width=True)
-
-        st.markdown("---")
-
-        # 2. Figures
-        st.subheader("B. Design Figures")
+    with col_int_out:
+        st.subheader("P–M Interaction Curves vs. Demand Point")
+        fig_pmx = plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Mux_eff"], 'x')
+        st.plotly_chart(fig_pmx, use_container_width=True)
+        fig_pmy = plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Muy_eff"], 'y')
+        st.plotly_chart(fig_pmy, use_container_width=True)
         
-        fig_sec_report = plotly_cross_section(b, D, cover, bars, state['tie_dia'], state['tie_spacing'])
-        st.plotly_chart(fig_sec_report, use_container_width=True)
+    st.markdown("---")
+    st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
+    # --- CALCULATION SECTION: SHEAR AND TIES (STEP 5 & 6) ---
+    st.header("5️⃣ Shear and Tie Design (IS 456 Cl. 40 / IS 13920)")
 
-        col_rep_fig1, col_rep_fig2 = st.columns(2)
-        with col_rep_fig1:
-            fig_pmx_report = plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Mux_eff"], 'x')
-            st.plotly_chart(fig_pmx_report, use_container_width=True)
-        with col_rep_fig2:
-            fig_pmy_report = plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Muy_eff"], 'y')
-            st.plotly_chart(fig_pmy_report, use_container_width=True)
-            
-        st.caption("Notes: All calculations follow Limit State Method principles from IS 456 (2000) and IS 13920 (2016).")
+    col_sh1, col_sh2, col_sh3 = st.columns(3)
+    tie_options = [6.0, 8.0, 10.0, 12.0]
+    
+    with col_sh1:
+        st.subheader("Tie Design Inputs")
+        st.markdown('<div class="highlight">', unsafe_allow_html=True)
+        state["tie_dia"] = st.selectbox("Tie $\\phi$ (mm)", tie_options, index=tie_options.index(state["tie_dia"]), key='in_tdia_shear')
+        leg_options_map = {"2-legged": 2, "4-legged": 4, "6-legged": 6}
+        current_legs_str = f"{state.get('legs', 4)}-legged"
+        selected_legs_str = st.selectbox("Tie Legs ($A_{sv}$)", list(leg_options_map.keys()), index=list(leg_options_map.keys()).index(current_legs_str), key='in_legs')
+        state["legs"] = leg_options_map[selected_legs_str]
+        state["tie_spacing"] = st.number_input("Tie Spacing $s$ (mm) Provided", 50.0, 300.0, state["tie_spacing"], 5.0, key='in_ts_prov')
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    b, D, cover, bars, Ag = recalculate_properties(state) 
+
+    with col_sh2:
+        st.subheader("Shear Capacity")
+        st.write(f"Axial load factor $\\phi_N$ (IS 456 Cl. 40.2.2.1): **{state['phiN']:.2f}**")
+        st.metric("Concrete Capacity $V_c$ (kN)", f"{kN(state['Vc'])}")
+        st.metric("Required Steel Capacity $V_{us}$ (kN)", f"{kN(state['Vus'])}")
+        
+    with col_sh3:
+        st.subheader("Tie Spacing Check")
+        st.metric("Shear Required $s$ (mm)", f"{state['s_required_shear']:.0f}")
+        st.metric("Detailing Cap $s$ (mm)", f"{state['s_cap_detailing']:.0f}")
+        s_status = "✅ Spacing PASS" if state["tie_spacing"] <= state["s_governing_tie"] else "❌ Spacing FAIL"
+        st.markdown(f"**Governing $s$ $\le$ {state['s_governing_tie']:.0f} mm:** **({s_status})**")
+        
+    st.markdown("#### Ductile Detailing Requirements (IS 13920)")
+    lo = max(state['D'], state['b'], state['storey_clear']/6.0, 450.0)
+    st.write(f"**Confinement Zone Length ($l_0$):** $l_0$ is the larger of $D$ ({D:.0f} mm), $b$ ({b:.0f} mm), $L_{{clear}}/6$ ({state['storey_clear']/6.0:.0f} mm), or $450$ mm. Governs to **{lo:.0f} mm** at each end.")
+    st.write(f"**Spacing in Confinement Zone:** Ties must not exceed **{state['s_13920_confine']:.0f} mm** (min($\min(b,D)/4$, 100 mm)).")
+    
+    st.markdown("---")
+    st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
+
+    # --- FINAL REPORT SUMMARY (STEP 7) ---
+    st.header("6️⃣ Final Submission Report Summary")
+    st.caption("This entire page is designed to be printed as a complete calculation sheet.")
+
+    # 1. Inputs & Outputs Table
+    st.subheader("A. Key Design Inputs and Governing Results")
+    
+    As_min = 0.008 * Ag 
+    As_governing_req = max(As_min, state['As_long'] * (state.get("util", 1.0) ** (1/state.get("alpha", 1.0))))
+
+    out = {
+        "Cross Section b x D (mm)": f"{b:.0f} x {D:.0f}", 
+        "Material fck / fy (MPa)": f"{state['fck']:.0f} / {state['fy']:.0f}",
+        "Design Pu (kN)": state["Pu"] / 1e3, 
+        "Design Mux,eff / Muy,eff (kNm)": f"{kNm(state['Mux_eff'])} / {kNm(state['Muy_eff'])}",
+        "Slenderness $\\lambda_x / \lambda_y$": f"{state['lam_x']:.1f} / {state['lam_y']:.1f} ({'Short' if state['short_x'] and state['short_y'] else 'Slender'})", 
+        "Magnifiers $\delta_x / \delta_y$": f"{state['delta_x']:.2f} / {state['delta_y']:.2f}", 
+        "Uniaxial Capacity $M_{u,lim}$ (kNm)": f"{kNm(state['Mux_lim'])} / {kNm(state['Muy_lim'])}",
+        "Biaxial Utilization ($\le 1$)": f"**{state['util']:.2f}**",
+        "Ast Provided (mm²)": f"{state['As_long']:.0f}",
+        "Ast Governing Required (mm²)": f"{As_governing_req:.0f}",
+        "Concrete Shear $V_c$ (kN)": f"{kN(state['Vc'])}",
+        "Tie Spacing Provided (mm)": f"Ø{state['tie_dia']:.0f} @ {state['tie_spacing']:.0f} (Legs: {state['legs']})",
+        "Tie Spacing Governing Req (mm)": f"{state['s_governing_tie']:.0f}",
+        "13920 Confined Zone Limit (mm)": f"{state['s_13920_confine']:.0f}"
+    }
+
+    df_out = pd.DataFrame({"Parameter": list(out.keys()), "Value": list(out.values())})
+    st.dataframe(df_out, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("B. Detailed Calculation Figures")
+    st.write("Cross-section and P-M interaction curves are plotted below to verify capacity.")
+    
+    fig_sec_report = plotly_cross_section(b, D, cover, bars, state['tie_dia'], state['tie_spacing'])
+    st.plotly_chart(fig_sec_report, use_container_width=True)
+    st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
+    
+    col_rep_fig1, col_rep_fig2 = st.columns(2)
+    with col_rep_fig1:
+        fig_pmx_report = plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Mux_eff"], 'x')
+        st.plotly_chart(fig_pmx_report, use_container_width=True)
+    with col_rep_fig2:
+        fig_pmy_report = plot_pm_curve_plotly(b, D, bars, state["fck"], state["fy"], state["Pu"], state["Muy_eff"], 'y')
+        st.plotly_chart(fig_pmy_report, use_container_width=True)
+        
+    st.markdown("---")
+    st.caption("Final Note: Calculations follow the Limit State Method of IS 456 (2000) with ductile detailing checks from IS 13920 (2016).")
 
 
 if __name__ == "__main__":
