@@ -34,6 +34,10 @@ st.markdown("""
   background: #fffceb !important;
 }
 .js-plotly-plot, .plotly, .user-select-none { margin: 0 !important; }
+.ok {color:#0a7a0a;font-weight:700}
+.notok {color:#b00020;font-weight:700}
+.badge {padding:4px 8px;border-radius:8px;background:#eef7ee;color:#0a7a0a;font-weight:700}
+.badge.bad {background:#fdecee;color:#b00020}
 </style>
 """, unsafe_allow_html=True)
 
@@ -51,15 +55,16 @@ def kNm(value: float) -> str:
     return f"{value / 1e6:.1f}"
 
 def effective_length_factor(restraint: str) -> float:
-    if restraint == "Fixed-Fixed": return 0.65
-    if restraint == "Fixed-Pinned": return 0.80
-    if restraint == "Pinned-Pinned": return 1.00
-    if restraint == "Fixed-Free (cantilever)": return 2.00
-    return 1.00
+    return {
+        "Fixed-Fixed": 0.65,
+        "Fixed-Pinned": 0.80,
+        "Pinned-Pinned": 1.00,
+        "Fixed-Free (cantilever)": 2.00
+    }.get(restraint, 1.00)
 
 def moment_magnifier(Pu: float, le_mm: float, fck: float, Ic: float, Cm: float = 0.85, sway: bool = False) -> float:
     Ec = 5000.0 * math.sqrt(max(fck, 1e-6))
-    # IS 456 39.7.1 (use 0.4 Ec Ic for cracked)
+    # cracked EI ~ 0.4 Ec Ic (IS 456 §39.7 hint)
     Pcr = (math.pi**2) * 0.4 * Ec * Ic / (le_mm**2 + 1e-9)
     if Pcr <= Pu:
         return 10.0  # avoid blow-up
@@ -98,54 +103,55 @@ def _linspace_points(a: float, c: float, n: int) -> List[float]:
     return [a + i * (c - a) / (n - 1) for i in range(n)]
 
 def _generate_bar_layout(b: float, D: float, cover: float, state: dict) -> List[Tuple[float, float, float]]:
+    """
+    Perimeter bars with *no corner double counting*:
+    - Top & bottom rows include corners.
+    - Side rows EXCLUDE corners (so plot count matches inputs exactly).
+    """
     n_top, n_bot, n_left, n_right = state["n_top"], state["n_bot"], state["n_left"], state["n_right"]
     dia_top, dia_bot, dia_side = state["dia_top"], state["dia_bot"], state["dia_side"]
 
     bars_list = []
     max_dia = max(dia_top, dia_bot, dia_side)
     dx_corner = cover + state["tie_dia"] + max_dia / 2.0
-    if dx_corner > min(b, D) / 2.0: 
-        dx_corner = min(b, D) / 2.0 - 5.0
+    dx_corner = min(dx_corner, min(b, D)/2 - 5.0)
 
-    # Top row (y = D - dx_corner)
-    if n_top > 0:
-        for x in _linspace_points(dx_corner, b - dx_corner, n_top):
-            bars_list.append((x, D - dx_corner, dia_top))
-    # Bottom row (y = dx_corner)
-    if n_bot > 0:
-        for x in _linspace_points(dx_corner, b - dx_corner, n_bot):
-            bars_list.append((x, dx_corner, dia_bot))
-    # Sides
-    y_start, y_end = dx_corner, D - dx_corner
+    x0, x1 = dx_corner, b - dx_corner
+    y0, y1 = dx_corner, D - dx_corner
+
+    # Top (includes corners)
+    for x in _linspace_points(x0, x1, n_top):
+        bars_list.append((x, y1, dia_top))
+    # Bottom (includes corners)
+    for x in _linspace_points(x0, x1, n_bot):
+        bars_list.append((x, y0, dia_bot))
+    # Left side EXCLUDING corners
     if n_left > 0:
-        for y in _linspace_points(y_start, y_end, n_left):
-            bars_list.append((dx_corner, y, dia_side))
+        ys = _linspace_points(y0, y1, n_left + 2)[1:-1]  # remove ends
+        for y in ys:
+            bars_list.append((x0, y, dia_side))
+    # Right side EXCLUDING corners
     if n_right > 0:
-        for y in _linspace_points(y_start, y_end, n_right):
-            bars_list.append((b - dx_corner, y, dia_side))
+        ys = _linspace_points(y0, y1, n_right + 2)[1:-1]  # remove ends
+        for y in ys:
+            bars_list.append((x1, y, dia_side))
 
-    # Deduplicate corners
-    unique = {}
-    for x, y, dia in bars_list:
-        loc = (round(x, 4), round(y, 4))
-        if loc not in unique or dia > unique[loc][2]:
-            unique[loc] = (x, y, dia)
-    return sorted(unique.values(), key=lambda t: (t[1], t[0]))
+    return bars_list  # no dedup needed now
 
 def _uniaxial_capacity_Mu_for_Pu(b: float, D: float, bars: List[Tuple[float, float, float]],
                                  fck: float, fy: float, Pu: float, axis: str) -> float:
     """
     Strain-compatibility (teaching-grade) uniaxial Mu_lim for a given Pu.
-    axis='x' means bending about x (compression across depth D, width=b).
-    axis='y' means bending about y (compression across width b, width=D for block).
+    axis='x' means bending about x (compression depth = D, width=b).
+    axis='y' means bending about y (compression depth = b, width=D).
     """
     depth = D if axis == 'x' else b    # direction of compression block depth (xu)
     width = b if axis == 'x' else D    # block width
 
     def forces_and_moment(c: float):
         xu = min(c, depth)
-        Cc = 0.36 * fck * width * xu              # N  (0.36 fck * b * xu)
-        arm_Cc = 0.5 * depth - 0.42 * xu          # mm (to section centroid along bending axis)
+        Cc = 0.36 * fck * width * xu              # N
+        arm_Cc = 0.5 * depth - 0.42 * xu          # mm
         Mc = Cc * arm_Cc
 
         Fs, Ms = 0.0, 0.0
@@ -195,21 +201,18 @@ def biaxial_utilization(b: float, D: float, bars: List[Tuple[float, float, float
 def plotly_cross_section(b: float, D: float, cover: float, bars: List[Tuple[float, float, float]],
                          tie_dia: float, tie_spacing: float) -> go.Figure:
     fig = go.Figure()
-    # Concrete outline
     fig.add_shape(type="rect", x0=0, y0=0, x1=b, y1=D,
                   line=dict(color="black", width=2),
                   fillcolor="rgba(240,240,240,0.8)")
-    # Effective cover boundary
     eff_cover = cover + tie_dia
     fig.add_shape(type="rect", x0=eff_cover, y0=eff_cover, x1=b-eff_cover, y1=D-eff_cover,
                   line=dict(color="gray", width=1, dash="dot"),
                   fillcolor="rgba(0,0,0,0)")
 
-    # Rebar markers
     xs, ys, sizes, txt = [], [], [], []
     for xg, yg, dia in bars:
         xs.append(xg); ys.append(yg)
-        sizes.append(max(6, dia*2))  # diameter visual
+        sizes.append(max(6, dia*2))
         txt.append(f"Ø{dia:.0f} mm ({bar_area(dia):.0f} mm²)")
     fig.add_trace(go.Scatter(
         x=xs, y=ys, mode='markers', name='Rebars',
@@ -218,7 +221,6 @@ def plotly_cross_section(b: float, D: float, cover: float, bars: List[Tuple[floa
 
     fig.add_annotation(x=b/2, y=D+10, text=f"Ties: Ø{int(tie_dia)} @ {int(tie_spacing)} mm",
                        showarrow=False, yanchor="bottom")
-    # Keep true aspect ratio
     fig.update_yaxes(scaleanchor="x", scaleratio=1, title="Depth D (mm)")
     fig.update_xaxes(title="Width b (mm)")
     fig.update_layout(title=f"Cross Section (b={b:.0f} × D={D:.0f} mm)",
@@ -283,7 +285,7 @@ def recalculate_properties(state):
 
     # (1) Bars & section props
     bars = _generate_bar_layout(b, D, cover, state)
-    As_long = sum(bar_area(dia) for _, _, dia in bars)
+    As_long = sum(bar_area(d) for _, _, d in bars)
     Ag = b * D
     Ic_x = b * D**3 / 12.0
     Ic_y = D * b**3 / 12.0
@@ -300,7 +302,6 @@ def recalculate_properties(state):
 
     emin_x = max(lo/500.0 + D/30.0, 20.0)
     emin_y = max(lo/500.0 + b/30.0, 20.0)
-    # FIX: base moments from min eccentricity are Pu (N) * e (mm) -> N·mm (no /1000)
     Mux_base = max(abs(Mux), abs(Pu * emin_x))
     Muy_base = max(abs(Muy), abs(Pu * emin_y))
 
@@ -400,13 +401,14 @@ def main():
         state["Vu"] = st.number_input("Shear $V_u$ (kN)", 0.0, 5000.0, state["Vu"]/1e3, 5.0, key='in_Vu') * 1e3
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # first recalc after geometry/material/load
     b, D, cover, bars, Ag = recalculate_properties(state)
     st.markdown("---")
     st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
 
-    # --- 2) Rebar & Sketch ---
+    # --- 2) Reinforcement & (now with live recalc before plotting) ---
     st.header("2️⃣ Reinforcement and Slenderness Setup")
-    col_r1, col_r2, col_r3 = st.columns(3)
+    col_r1, col_r2, col_r3 = st.columns([1,1,1.2])
     bar_options = [12.0, 16.0, 20.0, 25.0, 28.0, 32.0]
 
     with col_r1:
@@ -424,13 +426,26 @@ def main():
         state["dia_top"]  = st.selectbox("Top bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_top"]), key='in_dtop')
         state["dia_bot"]  = st.selectbox("Bottom bar $\\phi$ (mm)", bar_options, index=bar_options.index(state["dia_bot"]), key='in_dbot')
         state["dia_side"] = st.selectbox("Side bar $\\phi$ (mm)", bar_options[:-1], index=bar_options[:-1].index(state["dia_side"]), key='in_dside')
-        st.markdown(f"**$A_{{st}}$ Provided:** **{state['As_long']:.0f} mm$^2$** ({state['As_long'] * 100 / Ag:.2f}% $\\rho$)")
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # 🔧 IMPORTANT: recalc *after* bar counts/diameters, then draw
+    b, D, cover, bars, Ag = recalculate_properties(state)
+
+    with col_r2:
+        st.markdown(f"**$A_{{st}}$ Provided:** **{state['As_long']:.0f} mm$^2$** ({state['As_long'] * 100 / Ag:.2f}% $\\rho$)")
+
     with col_r3:
-        st.subheader("Section Sketch")
+        st.subheader("Section Sketch & Quick Check")
         fig_sec_inputs = plotly_cross_section(b, D, cover, bars, state['tie_dia'], state['tie_spacing'])
         chart(fig_sec_inputs, key=kkey("sec","inputs"))
+
+        # 👇 Quick interaction check right here beside the bars
+        util = state['util']
+        passfail = "PASS" if util <= 1.0 else "FAIL"
+        badge_class = "badge" if util <= 1.0 else "badge bad"
+        st.markdown(f'<span class="{badge_class}">Quick biaxial Σ = {util:.2f} → {passfail}</span>', unsafe_allow_html=True)
+        st.caption(f"Uses current Pu/Mux/Muy and slenderness settings. Mux_eff {kNm(state['Mux_eff'])} vs Mux_lim {kNm(state['Mux_lim'])}; "
+                   f"Muy_eff {kNm(state['Muy_eff'])} vs Muy_lim {kNm(state['Muy_lim'])}.")
 
     st.markdown("---")
 
@@ -450,6 +465,7 @@ def main():
         st.markdown(f"Calculated **$k$ Factor**: **{k_factor:.2f}**")
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # recalc again after slenderness changes
     b, D, cover, bars, Ag = recalculate_properties(state)
 
     with col_sl_out:
@@ -561,7 +577,6 @@ def main():
 
     st.markdown("---")
     st.subheader("B. Detailed Calculation Figures")
-    st.write("Cross-section and P–M interaction curves are plotted below for verification.")
     fig_sec_report = plotly_cross_section(b, D, cover, bars, state['tie_dia'], state['tie_spacing'])
     chart(fig_sec_report, key=kkey("sec","report"))
     st.markdown('<div class="print-break"></div>', unsafe_allow_html=True)
