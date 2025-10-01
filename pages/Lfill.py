@@ -44,12 +44,12 @@ def frustum_volume(h: float, A1: float, A2: float) -> float:
     return h * (A1 + A2 + math.sqrt(A1 * A2)) / 3.0
 
 # ---------------------------
-# 3D Plotting Helper Functions (NEW)
+# 3D Plotting Helper Functions
 # ---------------------------
 
 def get_footprint_corners(W: float, L: float, Z: float, RL_ref: float) -> List[Tuple[float, float, float]]:
     """Returns the 4 corner (X, Y, Z_abs) coordinates for a rectangular footprint."""
-    half_W, half_L = W / 2.0, L / 2.0
+    half_W, half_L = W / 2.0, length / 2.0
     RL = Z + RL_ref
     # Order: [(-W/2, -L/2), (W/2, -L/2), (W/2, L/2), (-W/2, L/2)]
     return [
@@ -593,15 +593,23 @@ def plotly_3d_full_stack(bblabl: dict, avg_ground_rl: float):
     )
     v_count += v_num_bund
     
-    # --- 4. GL Plane ---
+    # --- 4. GL Plane (FIXED: Removed erroneous surfacecolor argument) ---
     gl_corners = get_footprint_corners(W_outer_toe_gl * 1.1, L_outer_toe_gl * 1.1, 0.0, RL_ref)
+    
+    X_coords = np.unique([c[0] for c in gl_corners[:4]])
+    Y_coords = np.unique([c[1] for c in gl_corners[:4]])
+    RL_val = gl_corners[0][2]
+    Z_matrix = np.full((len(Y_coords), len(X_coords)), RL_val)
+    
     traces.append(
         go.Surface(
-            x=np.unique([c[0] for c in gl_corners[:4]]), y=np.unique([c[1] for c in gl_corners[:4]]), 
-            z=np.full((2, 2), gl_corners[0][2]), 
+            x=X_coords,
+            y=Y_coords, 
+            z=Z_matrix,
             colorscale=[[0, 'rgba(0, 128, 0, 0.2)'], [1, 'rgba(0, 128, 0, 0.2)']],
-            showscale=False, opacity=0.3, name='Ground Level',
-            surfacecolor=gl_corners[0][2] 
+            showscale=False, 
+            opacity=0.3, 
+            name='Ground Level',
         )
     )
 
@@ -624,7 +632,7 @@ def plotly_3d_full_stack(bblabl: dict, avg_ground_rl: float):
 
 
 # ---------------------------
-# Streamlit App Execution
+# Streamlit App Execution (Rest of the code remains the same)
 # ---------------------------
 
 st.set_page_config(page_title="Landfill Design App", layout="wide")
