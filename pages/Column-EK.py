@@ -131,7 +131,6 @@ def _uniaxial_capacity_Mu_for_Pu(b: float, D: float, bars: List[Tuple[float, flo
         """Calculates total Axial Force (N) and Moment (M) for a given Neutral Axis Depth c."""
         
         # 1. Concrete compression force (Cc) - IS 456 Cl. 38.1 & 38.3
-        # Assuming Rectangular Stress Block (0.446 * fck) over 0.42 * c
         xu_max = min(c, dimension)
         Cc = 0.36 * fck * dimension * xu_max
         arm_Cc = 0.5 * dimension - 0.42 * xu_max
@@ -223,8 +222,6 @@ def plotly_cross_section(b: float, D: float, cover: float, bars: List[Tuple[floa
     # Rebar scatter plot
     bar_x, bar_y, bar_size, bar_text = [], [], [], []
     for x_geom, y_geom, dia in bars:
-        # Note: Plotly y-axis starts from 0 at the bottom for standard views. 
-        # The internal calculation uses the standard civil engineering convention where y=0 is the bottom face.
         bar_x.append(x_geom)
         bar_y.append(y_geom)
         bar_size.append(dia * 2) 
@@ -250,7 +247,6 @@ def plot_pm_curve_plotly(b: float, D: float, bars: List[Tuple[float, float, floa
     dimension = D if axis == 'x' else b
     
     # Generate points across a range of Neutral Axis depths (c)
-    # We use a broad range of 'c' to trace the full capacity curve from pure tension to pure compression
     cs = np.linspace(0.01 * dimension, 1.50 * dimension, 120)
     P_list, M_list = [], []
     
@@ -309,7 +305,7 @@ def initialize_state():
             # Reinforcement
             "n_top": 3, "n_bot": 3, "n_left": 2, "n_right": 2, 
             "dia_top": 16.0, "dia_bot": 16.0, "dia_side": 12.0, "tie_dia": 8.0, "tie_spacing": 150.0,
-            "legs": 4, # Changed default to 4 for better representation
+            "legs": 4, 
             # Calculated Results
             "alpha": 1.0, "bars": [], "util": 0.0, "Vc": 0.0, "Vus": 0.0, "Ag": 0.0
         }
@@ -339,7 +335,6 @@ def recalculate_properties(state):
     short_x = lam_x <= 12.0
     short_y = lam_y <= 12.0
     
-    # Calculate moment magnifiers
     # Mux & Muy are checked against min eccentricity requirements first
     emin_x = max(lo/500.0 + D/30.0, 20.0)
     emin_y = max(lo/500.0 + b/30.0, 20.0)
@@ -365,13 +360,10 @@ def recalculate_properties(state):
     d_eff = D - (cover + state["tie_dia"] + 0.5 * max_long_dia) # Effective depth in D direction
     
     # Axial Load Factor (phi_N) - IS 456, Cl. 40.2.2.1
-    # phi_N = 1 + (3*Pu) / (Ag * fck) - (Alternative simpler IS 456 version for Vc boost)
-    # Using the ratio from Cl. 40.2.2.1: 1.0 + (Pu / (0.25 * fck * Ag)) [clipped between 0.5 and 1.5]
     phiN = float(np.clip(1.0 + (Pu / max(1.0, (0.25 * fck * Ag))), 0.5, 1.5))
     
     # Nominal shear strength of concrete (simplified tau_c approximation for Vc check)
-    # Note: A full lookup of P_t% in IS 456 Table 19 is ideal, but for robustness:
-    tau_c_base = 0.62 * math.sqrt(fck) / 1.0 # Very rough approx for minimum tau_c
+    tau_c_base = 0.62 * math.sqrt(fck) / 1.0 
     Vc = tau_c_base * b * d_eff * phiN # Apply phiN (Vc is in N)
     
     Vus = max(0.0, Vu - Vc) # Required shear reinforcement capacity
@@ -383,10 +375,10 @@ def recalculate_properties(state):
     # Spacing required for shear (s = 0.87 * fy * Asv * d_eff / Vus)
     s_required_shear = (0.87 * fy * Asv * d_eff) / max(Vus, 1e-6) if Vus > 0 else 300.0
     
-    # Detailing caps (IS 456 Cl. 26.5.3.2 and IS 13920 Cl. 7.4.7 for ductile detailing)
+    # Detailing caps (IS 456 Cl. 26.5.3.2)
     s_cap_detailing = min(16.0 * max_long_dia, min(b, D), 300.0)
     
-    # IS 13920 confinement zone limit
+    # IS 13920 confinement zone limit (Cl. 7.4.7)
     s_13920_confine = min(min(b,D) / 4.0, 100.0)
     
     s_governing_tie = min(s_cap_detailing, s_required_shear)
@@ -572,7 +564,6 @@ def main():
             st.subheader("Interaction Parameters")
             st.markdown('<div class="highlight">', unsafe_allow_html=True)
             # Power law exponent alpha depends on Pu/Puz. Here we let the user define it.
-            # Typical values: 1.0 (Pu/Puz < 0.2) to 2.0 (Pu/Puz > 0.8)
             state["alpha"] = st.slider("Interaction Exponent $\\alpha$ (IS 456 Annex G)", 0.8, 2.0, state["alpha"], 0.1, key='in_alpha_check')
             st.markdown('</div>', unsafe_allow_html=True)
             
@@ -643,7 +634,7 @@ def main():
         st.markdown("This tab provides detailing guidance, especially for zones requiring confinement (e.g., in seismic regions).")
 
         db_long = max([bar[2] for bar in bars], default=state['dia_top'])
-        lo = max(state['D'], state['b'], state['storey_clear']/6.0)
+        lo = max(state['D'], state['b'], state['storey_clear']/6.0, 450.0)
 
         col_d1, col_d2 = st.columns(2)
         with col_d1:
@@ -658,11 +649,10 @@ def main():
         with col_d2:
             st.subheader("Key Detailing Notes")
             st.markdown(f"""
-            * [cite_start]**Hoop Spacing in $l_0$:** Ties must not exceed **{state['s_13920_confine']:.0f} mm** [cite: 151]
-            * [cite_start]**Hoop Spacing Outside $l_0$:** Spacing must not exceed $\min(16\phi_{long}, 300)$ $\le$ **{state['s_cap_detailing']:.0f} mm** [cite: 151]
-            * [cite_start]**Hooks:** Use **135° hooks** with an extension of $10\phi$ (but not less than 75 mm) [cite: 152]
-            * [cite_start]**Splices:** Lap splices should be provided only in the **middle half** of the member height and **must not be provided** within the confinement length $l_0$ [cite: 152]
-            * [cite_start]**Crossties:** Provide crossties or ties such that every corner bar and **alternate bar** along the perimeter is restrained from buckling [cite: 153]
+            * **Hoop Spacing in $l_0$ (Confinement Zone):** Ties must not exceed **{state['s_13920_confine']:.0f} mm**
+            * **Hoop Spacing Outside $l_0$:** Spacing must not exceed $\min(16\phi_{long}, 300)$ $\le$ **{state['s_cap_detailing']:.0f} mm**
+            * **Hooks:** Use **135° hooks** with an extension of $10\phi$ (but not less than 75 mm)
+            * **Splices:** Lap splices should be provided only in the **middle half** of the member height and **must not be provided** within the confinement length $l_0$
             """)
             
     # --- T7: Final Report ---
