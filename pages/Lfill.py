@@ -120,7 +120,7 @@ DEFAULT_STAB = StabilityInputs(DEFAULT_STAB_PRESET["gamma_unsat"], DEFAULT_STAB_
 DEFAULT_LINER = WASTE_PRESETS["MSW"]["liner"].copy()
 
 # ---------------------------
-# Core Geometry & Volume Functions (MODIFIED)
+# Core Geometry & Volume Functions
 # ---------------------------
 
 def compute_bbl_abl(
@@ -134,15 +134,17 @@ def compute_bbl_abl(
     W_TOB/L_TOB is the inner waste crest width at TOB (z=Hb).
     W_Base/L_Base is the inner waste crest width at Base (z=-D) *based on m_bund_in*.
     W_Excav_Base/L_Excav_Base is the actual pit base width *based on m_excav* (used for volume calc only).
+    
+    NOTE: W_TOB and W_Base are calculated by *subtracting* 2*m*H, confirming the inward slope.
     """
     Hb = max(Hb, 0.0); D = max(D, 0.0); H_target_above = max(H_final - Hb, 0.0)
     
     # 1. Landfill Inner Profile Dimensions (Based on m_bund_in)
-    # W_TOB is inwards from W_GL over Hb using m_bund_in
+    # W_TOB is inwards from W_GL over Hb using m_bund_in (CORRECTLY INWARDS)
     W_TOB = max(W_GL - 2.0 * m_bund_in * Hb, 0.0)
     L_TOB = max(L_GL - 2.0 * m_bund_in * Hb, 0.0)
     
-    # W_Base is inwards from W_TOB over D using m_bund_in (defines the waste footprint)
+    # W_Base is inwards from W_TOB over D using m_bund_in (CORRECTLY INWARDS)
     W_Base = max(W_TOB - 2.0 * m_bund_in * D, 0.0) 
     L_Base = max(L_TOB - 2.0 * m_bund_in * D, 0.0)
     
@@ -155,7 +157,7 @@ def compute_bbl_abl(
     V_GL_to_TOB = frustum_volume(Hb, A_GL, A_TOB) 
     V_BBL = V_Base_to_GL + V_GL_to_TOB
 
-    # 2. ABL Calculation (Remains the same - starts from W_TOB/L_TOB)
+    # 2. ABL Calculation (Remains the same - starts from W_TOB/L_TOB, slopes inwards)
     abl_sections = []
     current_W, current_L, current_Z = W_TOB, L_TOB, Hb
     V_ABL = 0.0
@@ -206,7 +208,7 @@ def compute_bbl_abl(
     H_actual_above = current_Z - Hb
 
     # 3. Outer Bund Geometry & Volume (Soil)
-    W_outer_toe_gl = max(W_GL + 2.0 * m_outer * Hb, 0.0) # Outer toe width at GL
+    W_outer_toe_gl = max(W_GL + 2.0 * m_outer * Hb, 0.0) # Outer toe width at GL (OUTWARDS)
     L_outer_toe_gl = max(L_GL + 2.0 * m_outer * Hb, 0.0)
     W_outer_crest_tob = max(W_TOB + 2.0 * bc, 0.0) # Outer crest width at TOB
     L_outer_crest_tob = max(L_TOB + 2.0 * bc, 0.0)
@@ -216,7 +218,7 @@ def compute_bbl_abl(
     V_Bund_Soil_Approx = V_Outer_Bund 
     
     # 4. Excavation Profile Dimensions (Based on m_excav)
-    W_Excav_Base = max(W_GL - 2.0 * m_excav * D, 0.0)
+    W_Excav_Base = max(W_GL - 2.0 * m_excav * D, 0.0) # Excavation base is inwards from W_GL (CORRECTLY INWARDS)
     L_Excav_Base = max(L_GL - 2.0 * m_excav * D, 0.0)
     A_Excav_Base = max(W_Excav_Base * L_Excav_Base, 0.0)
     
@@ -312,7 +314,7 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
     x_outer_top_bund_plateau = [-bblabl["W_outer_crest_tob"] / 2.0, bblabl["W_outer_crest_tob"] / 2.0]
     z_outer_top_bund_plateau = [z2, z2]
     
-    # 3. Excavation Profile (Pit Boundary) - Yellow Line (ONLY BELOW GL)
+    # 3. Excavation Profile (Pit Boundary) - Red Line (ONLY BELOW GL)
     # Starts at W_GL at z=0 and slopes inwards with m_excav to W_Excav_Base at z=-D
     x_excav_right = [W_GL / 2.0] 
     z_excav_right = [z1]
@@ -336,7 +338,7 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
         "x_outer_right": x_outer_right, "z_outer_right": z_outer_right,
         "x_outer_top_bund_plateau": x_outer_top_bund_plateau, "z_outer_top_bund_plateau": z_outer_top_bund_plateau,
         
-        # New for Excavation Profile (Yellow)
+        # New for Excavation Profile (Red)
         "x_excav_right": x_excav_right, "z_excav_right": z_excav_right,
         "x_excav_left": x_excav_left, "z_excav_left": z_excav_left,
         "x_excav_base_plateau": x_excav_base_plateau, "z_excav_base_plateau": z_excav_base_plateau,
