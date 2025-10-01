@@ -419,8 +419,8 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float):
 
 def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, axis: str = "W") -> dict:
     
-    # ... (Keep your existing 2D plotting logic here, which is based on L/W metrics)
-    df_rect_metrics = df[['Level', 'Length (m)', 'Width (m)', 'Height (m)']].copy()
+    # FIX APPLIED HERE: Include 'Volume (Cum)' to allow checking if the row is a Berm row.
+    df_rect_metrics = df[['Level', 'Length (m)', 'Width (m)', 'Height (m)', 'Volume (Cum)']].copy()
     
     if axis == "W": 
         def get_dim(row): return row["Width (m)"]
@@ -445,6 +445,7 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, ax
     Z_current = 0.0
     for i in range(len(df_rect_metrics)):
         row = df_rect_metrics.iloc[i]
+        # This check now works because 'Volume (Cum)' is present
         if row['Level'].startswith('ABL') and row['Volume (Cum)'] is not None:
             # For ABL Berm rows, we use the height to determine the Z level
             abl_top_row = df_rect_metrics[df_rect_metrics['Level'] == row['Level'].replace(' Berm', '')].iloc[0]
@@ -484,7 +485,6 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, ax
         "axis": axis,
         "max_z": z_in_right[-1]
     }
-
 def plot_cross_section(section: dict, title: str = "Cross-Section") -> Optional[bytes]:
     # Placeholder for the matplotlib function, assuming user has it implemented
     # Since it's not provided, we just return None.
