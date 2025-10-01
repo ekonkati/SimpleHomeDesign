@@ -361,10 +361,11 @@ def plot_cross_section(section: dict, title: str = "Cross-Section") -> bytes:
     ax.plot(section["x_outer_left"], section["z_outer_left"], linestyle='-', color='k')
     ax.plot(section["x_outer_top_bund_plateau"], section["z_outer_top_bund_plateau"], linestyle='-', color='k') 
     
-    # 3. Excavation Profile (Pit Boundary) - Yellow Line (Below GL only)
-    ax.plot(section["x_excav_right"], section["z_excav_right"], linestyle='-', color='y', linewidth=3, label="Excavation Profile")
-    ax.plot(section["x_excav_left"], section["z_excav_left"], linestyle='-', color='y', linewidth=3)
-    ax.plot(section["x_excav_base_plateau"], section["z_excav_base_plateau"], linestyle='-', color='y', linewidth=3)
+    # 3. Excavation Profile (Pit Boundary) - RED Line (Below GL only)
+    # *** MODIFICATION APPLIED: color changed from 'y' to 'r' ***
+    ax.plot(section["x_excav_right"], section["z_excav_right"], linestyle='-', color='r', linewidth=3, label="Excavation Profile")
+    ax.plot(section["x_excav_left"], section["z_excav_left"], linestyle='-', color='r', linewidth=3)
+    ax.plot(section["x_excav_base_plateau"], section["z_excav_base_plateau"], linestyle='-', color='r', linewidth=3)
     
     # 4. Reference Lines
     ax.axhline(0, color='g', linewidth=1.5, linestyle=':', label="Ground Level (GL)")
@@ -374,7 +375,8 @@ def plot_cross_section(section: dict, title: str = "Cross-Section") -> bytes:
     # 5. Final Plot Setup
     ax.set_xlabel("x (m)"); ax.set_ylabel("z (m)"); ax.set_title(title); ax.grid(True, alpha=0.3)
     ax.legend(loc='upper left'); ax.axis('equal')
-    buf = io.BytesIO(); fig.savefig(buf, format="png", bbox_inches="tight", dpi=150); plt.close(fig)
+    buf = io.BytesIO();
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150); plt.close(fig)
     return buf.getvalue()
 
 # ---------------------------
@@ -545,7 +547,7 @@ with geom_tab:
     st.session_state.V_total = bblabl["V_total"]
     section = generate_section(bblabl, m_outer, W_int_berm)
     
-    title_caption = f"Separated Cross-section: Waste Profile (Blue, slope 1:{m_bund_in:.1f}), Excavation (Yellow, slope 1:{m_excav:.1f}), Bund (Black)"
+    title_caption = f"Separated Cross-section: Waste Profile (Blue, slope 1:{m_bund_in:.1f}), Excavation (Red, slope 1:{m_excav:.1f}), Bund (Black)"
     img = plot_cross_section(section, title=title_caption)
     st.image(img, caption=f"Unified Cross-section (Inner Stepped Landfill Profile with {bblabl.get('N_berms', 0)} Berms + Outer Profile)")
     st.markdown(f"### Results ({bblabl.get('N_berms', 0)} Intermediate Berms)")
@@ -640,7 +642,8 @@ with report_tab:
     st.subheader("Export")
     input_dump = {
         **asdict(st.session_state.site), **asdict(st.session_state.geom),
-        "footprint_area_GL": st.session_state.footprint["area"], "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
+        "footprint_area_GL": st.session_state.footprint["area"], 
+        "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
     }
     _df_boq = st.session_state.get("boq", pd.DataFrame())
     _df_summary = st.session_state.get("summary", pd.DataFrame())
@@ -677,4 +680,5 @@ with report_tab:
         
         kml_bytes = kml.kml().encode("utf-8")
     if kml_bytes:
-        st.download_button("Download KML (3D Footprints: Base, GL, TOL)", data=kml_bytes, file_name="landfill_3d_footprints.kml", mime="application/vnd.google-earth.kml+xml")
+        st.download_button("Download KML (3D Footprints: Base, GL, TOL)", 
+data=kml_bytes, file_name="landfill_3d_footprints.kml", mime="application/vnd.google-earth.kml+xml")
