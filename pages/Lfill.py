@@ -31,7 +31,7 @@ except Exception:
     PLOTLY_AVAILABLE = False
 
 # ---------------------------
-# Utility Functions (Defined first)
+# Utility Functions
 # ---------------------------
 
 def rectangle_polygon(width: float, length: float) -> List[Tuple[float, float]]:
@@ -44,7 +44,50 @@ def frustum_volume(h: float, A1: float, A2: float) -> float:
     return h * (A1 + A2 + math.sqrt(A1 * A2)) / 3.0
 
 # ---------------------------
-# Data Structures & Constants (Retained)
+# 3D Plotting Helper Functions (NEW)
+# ---------------------------
+
+def get_footprint_corners(W: float, L: float, Z: float, RL_ref: float) -> List[Tuple[float, float, float]]:
+    """Returns the 4 corner (X, Y, Z_abs) coordinates for a rectangular footprint."""
+    half_W, half_L = W / 2.0, L / 2.0
+    RL = Z + RL_ref
+    # Order: [(-W/2, -L/2), (W/2, -L/2), (W/2, L/2), (-W/2, L/2)]
+    return [
+        (-half_W, -half_L, RL),
+        (half_W, -half_L, RL),
+        (half_W, half_L, RL),
+        (-half_W, half_L, RL)
+    ]
+
+def frustum_mesh(W1, L1, Z1, W2, L2, Z2, RL_ref, start_v_index):
+    """Generates mesh vertices and faces for a rectangular frustum section."""
+    # Vertices (Z1 is 'bottom', Z2 is 'top')
+    corners1 = get_footprint_corners(W1, L1, Z1, RL_ref)
+    corners2 = get_footprint_corners(W2, L2, Z2, RL_ref)
+    verts = corners1 + corners2 # 8 vertices in total
+
+    # Faces (Triangles) connecting the two levels
+    faces = []
+    for i in range(4):
+        i1, i2 = i, (i + 1) % 4  # Bottom corners
+        i3, i4 = i + 4, (i + 1) % 4 + 4 # Top corners
+
+        # Face 1: (Z1_i, Z1_{i+1}, Z2_{i+1})
+        faces.append([i1, i2, i4])
+        # Face 2: (Z1_i, Z2_{i+1}, Z2_i)
+        faces.append([i1, i4, i3])
+
+    # Offset the indices by start_v_index
+    faces_np = np.array(faces) + start_v_index
+    
+    X = [v[0] for v in verts]
+    Y = [v[1] for v in verts]
+    Z_abs = [v[2] for v in verts]
+    
+    return X, Y, Z_abs, faces_np.tolist(), 8 # Return the vertex count
+
+# ---------------------------
+# Data Structures & Constants
 # ---------------------------
 
 WASTE_PRESETS = {
@@ -130,34 +173,26 @@ def compute_bbl_abl(
 ) -> Dict:
     """
     Computes BBL and ABL volumes and dimensions.
-    W_GL/L_GL is the user-defined opening at GL.
-    W_TOB/L_TOB is the inner waste crest width at TOB (z=Hb).
-    W_Base/L_Base is the inner waste crest width at Base (z=-D) *based on m_bund_in*.
-    W_Excav_Base/L_Excav_Base is the actual pit base width *based on m_excav* (used for volume calc only).
-    
-    NOTE: W_TOB and W_Base are calculated by *subtracting* 2*m*H, confirming the inward slope.
     """
     Hb = max(Hb, 0.0); D = max(D, 0.0); H_target_above = max(H_final - Hb, 0.0)
     
     # 1. Landfill Inner Profile Dimensions (Based on m_bund_in)
-    # W_TOB is inwards from W_GL over Hb using m_bund_in (CORRECTLY INWARDS)
     W_TOB = max(W_GL - 2.0 * m_bund_in * Hb, 0.0)
     L_TOB = max(L_GL - 2.0 * m_bund_in * Hb, 0.0)
     
-    # W_Base is inwards from W_TOB over D using m_bund_in (CORRECTLY INWARDS)
     W_Base = max(W_TOB - 2.0 * m_bund_in * D, 0.0) 
     L_Base = max(L_TOB - 2.0 * m_bund_in * D, 0.0)
     
-    A_Base = max(W_Base * L_Base, 0.0) # Waste base area
-    A_GL = max(W_GL * L_GL, 0.0)      # Waste/Excavation GL area
-    A_TOB = max(W_TOB * L_TOB, 0.0)   # Waste TOB area
+    A_Base = max(W_Base * L_Base, 0.0) 
+    A_GL = max(W_GL * L_GL, 0.0)      
+    A_TOB = max(W_TOB * L_TOB, 0.0)   
     
     # Volumes (Waste Capacity):
     V_Base_to_GL = frustum_volume(D, A_Base, A_GL)
     V_GL_to_TOB = frustum_volume(Hb, A_GL, A_TOB) 
     V_BBL = V_Base_to_GL + V_GL_to_TOB
 
-    # 2. ABL Calculation (Remains the same - starts from W_TOB/L_TOB, slopes inwards)
+    # 2. ABL Calculation
     abl_sections = []
     current_W, current_L, current_Z = W_TOB, L_TOB, Hb
     V_ABL = 0.0
@@ -208,32 +243,29 @@ def compute_bbl_abl(
     H_actual_above = current_Z - Hb
 
     # 3. Outer Bund Geometry & Volume (Soil)
-    W_outer_toe_gl = max(W_GL + 2.0 * m_outer * Hb, 0.0) # Outer toe width at GL (OUTWARDS)
+    W_outer_toe_gl = max(W_GL + 2.0 * m_outer * Hb, 0.0) 
     L_outer_toe_gl = max(L_GL + 2.0 * m_outer * Hb, 0.0)
-    W_outer_crest_tob = max(W_TOB + 2.0 * bc, 0.0) # Outer crest width at TOB
+    W_outer_crest_tob = max(W_TOB + 2.0 * bc, 0.0) 
     L_outer_crest_tob = max(L_TOB + 2.0 * bc, 0.0)
     
-    # V_Outer_Bund: Volume of the outer soil bund above GL
     V_Outer_Bund = frustum_volume(Hb, W_outer_toe_gl*L_outer_toe_gl, W_outer_crest_tob*L_outer_crest_tob)
     V_Bund_Soil_Approx = V_Outer_Bund 
     
     # 4. Excavation Profile Dimensions (Based on m_excav)
-    W_Excav_Base = max(W_GL - 2.0 * m_excav * D, 0.0) # Excavation base is inwards from W_GL (CORRECTLY INWARDS)
+    W_Excav_Base = max(W_GL - 2.0 * m_excav * D, 0.0) 
     L_Excav_Base = max(L_GL - 2.0 * m_excav * D, 0.0)
     A_Excav_Base = max(W_Excav_Base * L_Excav_Base, 0.0)
     
-    # V_Native_Soil_Excavated_Approx: Volume of soil removed using actual excavation slope m_excav
     V_Native_Soil_Excavated_Approx = frustum_volume(D, A_Excav_Base, A_GL)
 
-
     return {
-        # Waste/Liner Dimensions (based on m_bund_in)
+        # Waste/Liner Dimensions
         "W_Base": W_Base, "L_Base": L_Base, "A_Base": A_Base, 
         "W_GL": W_GL, "L_GL": L_GL, "A_GL": A_GL,
         "W_TOB": W_TOB, "L_TOB": L_TOB, "A_TOB": A_TOB,
         "W_TOL": W_TOL_final, "L_TOL": L_TOL_final, "A_TOL": A_TOL_final,
         
-        # Excavation Dimensions (based on m_excav)
+        # Excavation Dimensions 
         "W_Excav_Base": W_Excav_Base, "L_Excav_Base": L_Excav_Base, "A_Excav_Base": A_Excav_Base,
         
         # Overall Geometry
@@ -252,43 +284,67 @@ def compute_bbl_abl(
     }
 
 
-def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: float) -> dict:
+def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: float, axis: str = "W") -> dict:
     D, Hb, bc = bblabl["D"], bblabl["Hb"], bblabl["bc"]
-    W_Base, W_GL, W_TOB, W_TOL = bblabl["W_Base"], bblabl["W_GL"], bblabl["W_TOB"], bblabl["W_TOL"]
-    W_Excav_Base = bblabl["W_Excav_Base"]
+    
+    # ------------------ DIMENSION MAPPING ------------------
+    # Select dimensions based on axis for the 2D plot (W-axis cut uses W dimensions, L-axis cut uses L dimensions)
+    if axis == "W": 
+        W_Base, L_ref = bblabl["W_Base"], bblabl["L_GL"]
+        W_GL = bblabl["W_GL"]
+        W_TOB = bblabl["W_TOB"]
+        W_TOL = bblabl["W_TOL"]
+        W_Excav_Base = bblabl["W_Excav_Base"]
+        W_outer_toe_gl = bblabl["W_outer_toe_gl"]
+        W_outer_crest_tob = bblabl["W_outer_crest_tob"]
+        def get_abl_w(section): return section["W_base"], section["W_top"]
+
+    else: # axis == "L"
+        W_Base, L_ref = bblabl["L_Base"], bblabl["W_GL"]
+        W_GL = bblabl["L_GL"]
+        W_TOB = bblabl["L_TOB"]
+        W_TOL = bblabl["L_TOL"]
+        W_Excav_Base = bblabl["L_Excav_Base"]
+        W_outer_toe_gl = bblabl["L_outer_toe_gl"]
+        W_outer_crest_tob = bblabl["L_outer_crest_tob"]
+        def get_abl_w(section): return section["L_base"], section["L_top"]
+    # -------------------------------------------------------------
+
     m_outer = outside_slope_h_geom
     z0, z1, z2 = -D, 0.0, Hb
     Z_TOL = z2 + bblabl["H_above"]
     
     # 1. Landfill Inner Profile (BBL + ABL) - Blue Line
-    # Defines the usable waste volume boundary. Starts from W_Base at z=-D.
     x_in_right = [W_Base / 2.0] 
     z_in_right = [z0]
     
-    # Slope up from Base to GL (W_Base/2.0, z0) -> (W_GL/2.0, z1) using m_bund_in
+    # Slope up from Base to GL
     x_in_right.append(W_GL / 2.0)
     z_in_right.append(z1)
     
-    # Slope up from GL to TOB (W_GL/2.0, z1) -> (W_TOB/2.0, z2) using m_bund_in
+    # Slope up from GL to TOB
     x_in_right.append(W_TOB / 2.0)
     z_in_right.append(z2)
     
-    # Add ABL steps (starts from W_TOB/2.0, z2)
+    # Add ABL steps 
     for section in bblabl["abl_sections"]:
-        if section["Z_base"] > z_in_right[-1] or section["W_base"] != x_in_right[-1]*2.0:
-            x_in_right.append(section["W_base"] / 2.0)
+        W_base_abl, W_top_abl = get_abl_w(section)
+
+        if section["Z_base"] > z_in_right[-1] or W_base_abl != x_in_right[-1]*2.0:
+            x_in_right.append(W_base_abl / 2.0)
             z_in_right.append(section["Z_base"])
             
         if section["Type"] in ["Fill", "Fill_Cap"]:
-            x_in_right.append(section["W_top"] / 2.0)
+            x_in_right.append(W_top_abl / 2.0)
             z_in_right.append(section["Z_top"])
-            
+         
     # Final TOL Point
     if not (abs(x_in_right[-1] - W_TOL / 2.0) < 1e-3 and abs(z_in_right[-1] - Z_TOL) < 1e-3):
           x_in_right.append(W_TOL / 2.0)
           z_in_right.append(Z_TOL)
           
-    x_in_left = [-x for x in x_in_right]; z_in_left = z_in_right
+    x_in_left = [-x for x in x_in_right];
+    z_in_left = z_in_right
 
     # 2. Outer Profile (Native Soil Bund) - Black Line (ONLY ABOVE GL)
     x_outer_right = []
@@ -299,23 +355,22 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
     z_outer_right.append(z1)
 
     if Hb > 0:
-        # Go from GL inner width to Outer Toe (W_outer_toe_gl/2.0, z1) - horizontal/berm toe segment at GL
-        x_outer_right.append(bblabl["W_outer_toe_gl"] / 2.0)
+        # Go from GL inner width to Outer Toe
+        x_outer_right.append(W_outer_toe_gl / 2.0)
         z_outer_right.append(z1)
 
-        # Go up to Outer Crest (W_outer_crest_tob/2.0, z2) - outer bund slope (m_outer)
-        x_outer_right.append(bblabl["W_outer_crest_tob"] / 2.0)
+        # Go up to Outer Crest 
+        x_outer_right.append(W_outer_crest_tob / 2.0)
         z_outer_right.append(z2)
     
     x_outer_left = [-x for x in x_outer_right]
     z_outer_left = z_outer_right
 
     # Outer Bund Top Crest (Horizontal black line at TOB)
-    x_outer_top_bund_plateau = [-bblabl["W_outer_crest_tob"] / 2.0, bblabl["W_outer_crest_tob"] / 2.0]
+    x_outer_top_bund_plateau = [-W_outer_crest_tob / 2.0, W_outer_crest_tob / 2.0]
     z_outer_top_bund_plateau = [z2, z2]
     
     # 3. Excavation Profile (Pit Boundary) - Red Line (ONLY BELOW GL)
-    # Starts at W_GL at z=0 and slopes inwards with m_excav to W_Excav_Base at z=-D
     x_excav_right = [W_GL / 2.0] 
     z_excav_right = [z1]
     
@@ -343,8 +398,9 @@ def generate_section(bblabl: dict, outside_slope_h_geom: float, W_int_berm: floa
         "x_excav_left": x_excav_left, "z_excav_left": z_excav_left,
         "x_excav_base_plateau": x_excav_base_plateau, "z_excav_base_plateau": z_excav_base_plateau,
         
-        "base_area": bblabl["A_Base"], "plan_length_equiv": bblabl["L_GL"],
-        "x_max_slope": bblabl["W_outer_crest_tob"] / 2.0, "z_min_slope": z0, "z_max_slope": Z_TOL,
+        "base_area": bblabl["A_Base"], "plan_length_equiv": L_ref, 
+        "x_max_slope": W_outer_crest_tob / 2.0, "z_min_slope": z0, "z_max_slope": Z_TOL,
+        "axis": axis # Return the axis
     }
 
 def plot_cross_section(section: dict, title: str = "Cross-Section") -> bytes:
@@ -364,7 +420,6 @@ def plot_cross_section(section: dict, title: str = "Cross-Section") -> bytes:
     ax.plot(section["x_outer_top_bund_plateau"], section["z_outer_top_bund_plateau"], linestyle='-', color='k') 
     
     # 3. Excavation Profile (Pit Boundary) - RED Line (Below GL only)
-    # *** MODIFICATION APPLIED: color changed from 'y' to 'r' ***
     ax.plot(section["x_excav_right"], section["z_excav_right"], linestyle='-', color='r', linewidth=3, label="Excavation Profile")
     ax.plot(section["x_excav_left"], section["z_excav_left"], linestyle='-', color='r', linewidth=3)
     ax.plot(section["x_excav_base_plateau"], section["z_excav_base_plateau"], linestyle='-', color='r', linewidth=3)
@@ -375,14 +430,14 @@ def plot_cross_section(section: dict, title: str = "Cross-Section") -> bytes:
         ax.axhline(section["z_in_right"][2], color='r', linewidth=0.8, linestyle='--', label="Top of Bund (TOB)")
     
     # 5. Final Plot Setup
-    ax.set_xlabel("x (m)"); ax.set_ylabel("z (m)"); ax.set_title(title); ax.grid(True, alpha=0.3)
+    ax.set_xlabel(f"{section['axis']}-axis distance (m)"); ax.set_ylabel("z (m)"); ax.set_title(title); ax.grid(True, alpha=0.3)
     ax.legend(loc='upper left'); ax.axis('equal')
     buf = io.BytesIO();
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=150); plt.close(fig)
     return buf.getvalue()
 
 # ---------------------------
-# Other Functions (Retained)
+# Other Functions
 # ---------------------------
 
 def grid_search_bishop(section, stab, n_slices=72) -> Tuple[float, dict, pd.DataFrame]:
@@ -440,15 +495,136 @@ def export_excel(inputs: dict, section: dict, bblabl: dict, boq: pd.DataFrame, s
     return output.getvalue()
 
 def plotly_3d_full_stack(bblabl: dict, avg_ground_rl: float):
+    """
+    Generates a full 3D mesh model of the landfill (Waste, Excavation, Bund).
+    """
     if go is None: return None
-    fig = go.Figure()
-    fig.update_layout(title="3D Landfill (Stepped ABL) - Placeholder", height=600,
-                      scene=dict(xaxis_title="Easting (m)", yaxis_title="Northing (m)", zaxis_title="RL (m)", aspectmode="cube"),
-                      showlegend=True)
+    
+    RL_ref = avg_ground_rl 
+    traces = []
+    v_count = 0 
+    
+    # --- 1. Waste Mass / Liner (BBL and ABL) (Blue) ---
+    W_Base, L_Base = bblabl["W_Base"], bblabl["L_Base"]
+    W_GL, L_GL = bblabl["W_GL"], bblabl["L_GL"]
+    D, Hb = bblabl["D"], bblabl["Hb"]
+    
+    # 1.1 Base Excavation to GL (BBL)
+    X_bbl, Y_bbl, Z_bbl, faces_bbl, v_num_bbl = frustum_mesh(W_Base, L_Base, -D, W_GL, L_GL, 0.0, RL_ref, v_count)
+    
+    # 1.2 GL to TOB section
+    W_TOB, L_TOB = bblabl["W_TOB"], bblabl["L_TOB"]
+    X_gl_tob, Y_gl_tob, Z_gl_tob, faces_gl_tob, v_num_gl_tob = frustum_mesh(W_GL, L_GL, 0.0, W_TOB, L_TOB, Hb, RL_ref, v_count + v_num_bbl)
+
+    # 1.3 ABL stepped sections (from TOB to TOL)
+    X_abl, Y_abl, Z_abl, faces_abl = [], [], [], []
+    current_W, current_L, current_Z = W_TOB, L_TOB, Hb
+    abl_v_count = v_count + v_num_bbl + v_num_gl_tob
+    
+    for section in bblabl["abl_sections"]:
+        W_top, L_top, Z_top = section["W_top"], section["L_top"], section["Z_top"]
+        
+        X_seg, Y_seg, Z_seg, faces_seg, v_num_seg = frustum_mesh(current_W, current_L, current_Z, W_top, L_top, Z_top, RL_ref, abl_v_count)
+        
+        X_abl.extend(X_seg); Y_abl.extend(Y_seg); Z_abl.extend(Z_seg); faces_abl.extend(faces_seg);
+        abl_v_count += v_num_seg
+        
+        current_W, current_L, current_Z = W_top, L_top, Z_top
+
+    # Combine all waste vertices/faces
+    all_X_waste = X_bbl + X_gl_tob + X_abl
+    all_Y_waste = Y_bbl + Y_gl_tob + Y_abl
+    all_Z_waste = Z_bbl + Z_gl_tob + Z_abl
+    all_faces_waste = faces_bbl + faces_gl_tob + faces_abl
+    
+    I_waste = [f[0] for f in all_faces_waste]
+    J_waste = [f[1] for f in all_faces_waste]
+    K_waste = [f[2] for f in all_faces_waste]
+    
+    # Waste Mesh Trace (Blue)
+    traces.append(
+        go.Mesh3d(
+            x=all_X_waste, y=all_Y_waste, z=all_Z_waste,
+            i=I_waste, j=J_waste, k=K_waste,
+            opacity=0.8, color='rgba(0, 0, 255, 0.6)', 
+            name='Waste (Landfill Profile)', hoverinfo='name'
+        )
+    )
+    v_count += len(all_X_waste)
+    
+    # --- 2. Outer Excavation Pit (Red/Yellow boundary representation) ---
+    W_Excav_Base, L_Excav_Base = bblabl["W_Excav_Base"], bblabl["L_Excav_Base"]
+    
+    X_excav, Y_excav, Z_excav, faces_excav, v_num_excav = frustum_mesh(W_GL, L_GL, 0.0, W_Excav_Base, L_Excav_Base, -D, RL_ref, v_count)
+    
+    I_excav = [f[0] for f in faces_excav]
+    J_excav = [f[1] for f in faces_excav]
+    K_excav = [f[2] for f in faces_excav]
+
+    # Excavation Mesh Trace (Orange-Yellow)
+    traces.append(
+        go.Mesh3d(
+            x=X_excav, y=Y_excav, z=Z_excav,
+            i=I_excav, j=J_excav, k=K_excav,
+            opacity=0.8, color='rgba(255, 165, 0, 0.8)', 
+            name='Excavation Pit Wall', hoverinfo='name'
+        )
+    )
+    v_count += v_num_excav
+
+    # --- 3. Outer Bund (Black) ---
+    W_outer_toe_gl, L_outer_toe_gl = bblabl["W_outer_toe_gl"], bblabl["L_outer_toe_gl"]
+    W_outer_crest_tob, L_outer_crest_tob = bblabl["W_outer_crest_tob"], bblabl["L_outer_crest_tob"]
+    
+    X_bund, Y_bund, Z_bund, faces_bund, v_num_bund = frustum_mesh(W_outer_toe_gl, L_outer_toe_gl, 0.0, W_outer_crest_tob, L_outer_crest_tob, Hb, RL_ref, v_count)
+    
+    I_bund = [f[0] for f in faces_bund]
+    J_bund = [f[1] for f in faces_bund]
+    K_bund = [f[2] for f in faces_bund]
+    
+    # Bund Mesh Trace (Black/Grey)
+    traces.append(
+        go.Mesh3d(
+            x=X_bund, y=Y_bund, z=Z_bund,
+            i=I_bund, j=J_bund, k=K_bund,
+            opacity=0.9, color='rgba(50, 50, 50, 0.8)', 
+            name='Outer Soil Bund', hoverinfo='name'
+        )
+    )
+    v_count += v_num_bund
+    
+    # --- 4. GL Plane ---
+    gl_corners = get_footprint_corners(W_outer_toe_gl * 1.1, L_outer_toe_gl * 1.1, 0.0, RL_ref)
+    traces.append(
+        go.Surface(
+            x=np.unique([c[0] for c in gl_corners[:4]]), y=np.unique([c[1] for c in gl_corners[:4]]), 
+            z=np.full((2, 2), gl_corners[0][2]), 
+            colorscale=[[0, 'rgba(0, 128, 0, 0.2)'], [1, 'rgba(0, 128, 0, 0.2)']],
+            showscale=False, opacity=0.3, name='Ground Level',
+            surfacecolor=gl_corners[0][2] 
+        )
+    )
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        title="3D Landfill Model (BBL/ABL, Excavation, Bund)", 
+        height=700,
+        scene=dict(
+            xaxis_title="Width (m)", yaxis_title="Length (m)", zaxis_title="RL (m)", 
+            aspectmode="data", 
+            camera=dict(
+                up=dict(x=0, y=0, z=1),
+                center=dict(x=0, y=0, z=0),
+                eye=dict(x=1.25, y=1.25, z=1.25)
+            )
+        ),
+        showlegend=True
+    )
     return fig
 
+
 # ---------------------------
-# Streamlit App Execution (Retained)
+# Streamlit App Execution
 # ---------------------------
 
 st.set_page_config(page_title="Landfill Design App", layout="wide")
@@ -537,8 +713,16 @@ with geom_tab:
     )
     m_bund_in = bund_in_H / max(bund_in_V, 1e-6)
     m_fill    = fill_H / max(fill_V, 1e-6)
-    m_excav   = outer_soil_H / max(outer_soil_V, 1e-6) # m_excav is now m_outer
+    m_excav   = outer_soil_H / max(outer_soil_V, 1e-6) 
     m_outer   = outer_soil_H / max(outer_soil_V, 1e-6)
+    
+    # Cross-Section Selection
+    st.markdown("### Cross-Section & 3D Visualization")
+    axis_col, title_col = st.columns([1, 2])
+    
+    cross_section_axis = axis_col.radio("View Cross-Section Along:", ["Width (W)", "Length (L)"], key="cross_section_axis")
+    plot_axis = "W" if cross_section_axis == "Width (W)" else "L"
+    
     bblabl = compute_bbl_abl(
         st.session_state.footprint["W_GL"], st.session_state.footprint["L_GL"],
         Hb, bc, m_bund_in, D, m_excav, final_height_above_gl, m_fill,
@@ -547,11 +731,14 @@ with geom_tab:
     )
     st.session_state.bblabl = bblabl
     st.session_state.V_total = bblabl["V_total"]
-    section = generate_section(bblabl, m_outer, W_int_berm)
     
-    title_caption = f"Separated Cross-section: Waste Profile (Blue, slope 1:{m_bund_in:.1f}), Excavation (Red, slope 1:{m_excav:.1f}), Bund (Black)"
+    section = generate_section(bblabl, m_outer, W_int_berm, axis=plot_axis)
+    
+    title_caption = f"{cross_section_axis} Axis Cross-section: Waste Profile (Blue), Excavation (Red, slope 1:{m_excav:.1f}), Bund (Black)"
     img = plot_cross_section(section, title=title_caption)
-    st.image(img, caption=f"Unified Cross-section (Inner Stepped Landfill Profile with {bblabl.get('N_berms', 0)} Berms + Outer Profile)")
+    st.image(img, caption=f"Unified Cross-section (Inner Stepped Landfill Profile with {bblabl.get('N_berms', 0)} Berms + Outer Profile) along the {cross_section_axis} axis.")
+    
+    st.markdown("---")
     st.markdown(f"### Results ({bblabl.get('N_berms', 0)} Intermediate Berms)")
     colm1, colm2, colm3 = st.columns(3)
     colm1.metric("BBL volume (m³)", f"{bblabl['V_BBL']:,.0f}")
@@ -562,6 +749,7 @@ with geom_tab:
     life_days = capacity_tonnes / max(st.session_state.site.inflow_tpd, 1e-6)
     life_years = life_days / 365.0
     st.metric("Estimated life (years)", f"{life_years:,.1f}")
+    
     st.subheader("3D Landfill model (Stepped ABL) with Outer Berms")
     if PLOTLY_AVAILABLE:
         fig3d = plotly_3d_full_stack(bblabl, st.session_state.site.avg_ground_rl)
