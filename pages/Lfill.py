@@ -5,23 +5,28 @@ import xml.etree.ElementTree as ET
 from typing import List, Tuple, Optional, Dict
 from io import BytesIO
 
-# Optional imports for plotting and advanced geometry
+# --- Optional Imports ---
 try:
     import numpy as np
+    NUMPY_AVAILABLE = True
 except Exception:
     np = None
+    NUMPY_AVAILABLE = False
+    
 try:
     import plotly.graph_objects as go
     PLOTLY_AVAILABLE = True
 except Exception:
     go = None
     PLOTLY_AVAILABLE = False
+    
 try:
     import matplotlib.pyplot as plt
     MATPLOTLIB_AVAILABLE = True
 except Exception:
     plt = None
     MATPLOTLIB_AVAILABLE = False
+    
 try:
     from shapely.geometry import Polygon, MultiPolygon
     SHAPELY_AVAILABLE = True
@@ -29,7 +34,6 @@ except Exception:
     Polygon = None
     MultiPolygon = None
     SHAPELY_AVAILABLE = False
-
 
 st.set_page_config(page_title="Landfill Levels (BBL/BL/ABL Berms)", layout="wide")
 st.title("Landfill Levels – BBL, BL, and ABL (with Berms)")
@@ -45,13 +49,15 @@ def vh_to_h_per_v(vh: str) -> float:
         return 3.0
 
 def frustum_volume(A1: float, A2: float, H: float) -> float:
+    # Formula for frustum volume: H/3 * (A1 + A2 + sqrt(A1*A2))
     return H/3.0 * (A1 + A2 + math.sqrt(max(A1*A2, 0.0)))
 
 def rectangle_polygon(width: float, length: float) -> List[Tuple[float, float]]:
+    """Generates 5 XY points for a closed rectangular footprint centered at (0,0)."""
     half_w, half_l = width / 2.0, length / 2.0
     return [(-half_w, -half_l), (half_w, -half_l), (half_w, half_l), (-half_w, half_l), (-half_w, -half_l)]
 
-# --- New/Modified Geometry Functions for Polygon Mode ---
+# --- Geometry Functions for Polygon Mode (KML) ---
 
 def polygon_buffer(xy_coords: List[Tuple[float, float]], offset_dist: float) -> Optional[List[Tuple[float, float]]]:
     """Generates a new polygon by offsetting (buffering) the original xy_coords using Shapely."""
@@ -59,18 +65,22 @@ def polygon_buffer(xy_coords: List[Tuple[float, float]], offset_dist: float) -> 
         return None
         
     try:
-        # Close the polygon if it isn't already
+        # Ensure the polygon is closed for Shapely
         if xy_coords[0] != xy_coords[-1]:
             poly = Polygon(xy_coords + [xy_coords[0]])
         else:
             poly = Polygon(xy_coords)
 
-        # Negative offset for shrinking (BBL, ABL top), positive for expanding (not used here)
-        new_poly = poly.buffer(offset_dist, join_style=2, mitre_limit=5.0) # join_style=2 for mitered corners
+        # Negative offset for shrinking (BBL, ABL top)
+        new_poly = poly.buffer(offset_dist, join_style=2, mitre_limit=5.0) 
         
-        # In case the buffer results in MultiPolygon, take the largest one (e.g., if it shrinks too far)
+        # Handle cases where buffering results in multiple polygons
         if isinstance(new_poly, MultiPolygon):
+            if not new_poly.geoms: return None
             new_poly = max(new_poly.geoms, key=lambda p: p.area)
+        
+        # If the resulting polygon is too small (area is zero), return None
+        if new_poly.area < 1e-6: return None
             
         # Extract the exterior coordinates and close the loop for plotting
         new_coords = list(new_poly.exterior.coords)
@@ -82,17 +92,14 @@ def polygon_buffer(xy_coords: List[Tuple[float, float]], offset_dist: float) -> 
         return None
 
 def parse_kml_polygon(file_bytes: bytes) -> Optional[List[Tuple[float,float]]]:
+    """Parses KML file bytes to extract (Lat, Lon) coordinates."""
     try:
-        # Use ElementTree to parse KML
         tree = ET.fromstring(file_bytes)
     except Exception:
         return None
     
-    # Try with KML namespace
     ns = {"kml": "http://www.opengis.net/kml/2.2"}
     coords_elems = tree.findall(".//kml:Polygon/kml:outerBoundaryIs/kml:LinearRing/kml:coordinates", ns)
-    
-    # Try without namespace if the first failed
     if not coords_elems:
         coords_elems = tree.findall(".//Polygon/outerBoundaryIs/LinearRing/coordinates")
         if not coords_elems:
@@ -113,13 +120,13 @@ def parse_kml_polygon(file_bytes: bytes) -> Optional[List[Tuple[float,float]]]:
     return pts if len(pts) >= 3 else None
 
 def latlon_to_xy(lat, lon, lat0, lon0):
-    # Simple Mercator-like projection relative to the centroid
+    """Converts Lat/Lon to XY coordinates (meters) relative to a centroid (lat0, lon0)."""
     x = (math.radians(lon - lon0) * math.cos(math.radians(lat0))) * EARTH_R
     y = (math.radians(lat - lat0)) * EARTH_R
     return x, y
 
 def polygon_area_perimeter_xy(xy_pts: List[Tuple[float,float]]) -> Tuple[float,float]:
-    # Calculate Area and Perimeter using the Shoelace formula
+    """Calculates Area and Perimeter from XY coordinates using the Shoelace formula."""
     if not xy_pts: return 0.0, 0.0
     
     pts = xy_pts
@@ -136,7 +143,8 @@ def polygon_area_perimeter_xy(xy_pts: List[Tuple[float,float]]) -> Tuple[float,f
     return abs(area2)/2.0, perim
 
 def kml_to_area_perimeter_and_xy(file) -> Tuple[float, float, Optional[List[Tuple[float, float]]]]:
-    file.seek(0) # Ensure reading from the start
+    """Main KML loader function."""
+    file.seek(0)
     latlon = parse_kml_polygon(file.read())
     if not latlon:
         return 0.0, 0.0, None
@@ -147,13 +155,14 @@ def kml_to_area_perimeter_and_xy(file) -> Tuple[float, float, Optional[List[Tupl
     
     A, P = polygon_area_perimeter_xy(xy)
     
-    # Ensure the XY list is closed for internal consistency
+    # Ensure the XY list is closed
     if xy and xy[0] != xy[-1]:
         xy.append(xy[0])
         
     return A, P, xy
 
 def rect_from_A_P(A: float, P: float) -> Tuple[float, float]:
+    """Calculates Length and Width of an equivalent rectangle from Area and Perimeter."""
     S = P/2.0
     disc = (S/2.0)**2 - A
     if disc < 0:
@@ -162,20 +171,18 @@ def rect_from_A_P(A: float, P: float) -> Tuple[float, float]:
     root = math.sqrt(disc)
     W = S/2.0 - root
     L = S - W
-    if L < W:
-        L, W = W, L
+    if L < W: L, W = W, L
     return L, W
+
+# --- Geometry Functions for Rectangular Mode ---
 
 def get_footprint_corners(W: float, L: float, Z: float, RL_ref: float) -> List[Tuple[float, float, float]]:
     """Returns the 4 corner (X, Y, Z_abs) coordinates for a rectangular footprint."""
     half_W, half_L = W / 2.0, L / 2.0
     RL = Z + RL_ref
-    # Order: [(-W/2, -L/2), (W/2, -L/2), (W/2, L/2), (-W/2, L/2)]
     return [
-        (-half_W, -half_L, RL),
-        (half_W, -half_L, RL),
-        (half_W, half_L, RL),
-        (-half_W, half_L, RL)
+        (-half_W, -half_L, RL), (half_W, -half_L, RL), 
+        (half_W, half_L, RL), (-half_W, half_L, RL)
     ]
 
 def frustum_mesh(W1, L1, Z1, W2, L2, Z2, RL_ref, start_v_index):
@@ -186,8 +193,8 @@ def frustum_mesh(W1, L1, Z1, W2, L2, Z2, RL_ref, start_v_index):
 
     faces = []
     for i in range(4):
-        i1, i2 = i, (i + 1) % 4  # Bottom corners
-        i3, i4 = i + 4, (i + 1) % 4 + 4 # Top corners
+        i1, i2 = i, (i + 1) % 4
+        i3, i4 = i + 4, (i + 1) % 4 + 4
 
         # Face 1: (Z1_i, Z1_{i+1}, Z2_{i+1})
         faces.append([i1, i2, i4])
@@ -200,8 +207,7 @@ def frustum_mesh(W1, L1, Z1, W2, L2, Z2, RL_ref, start_v_index):
     Y = [v[1] for v in verts]
     Z_abs = [v[2] for v in verts]
     
-    return X, Y, Z_abs, faces_np.tolist(), 8 # Return the vertex count
-
+    return X, Y, Z_abs, faces_np.tolist(), 8 
 
 def fmt(x, unit=""):
     if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
@@ -209,8 +215,6 @@ def fmt(x, unit=""):
     if unit:
         return f"{x:,.2f} {unit}"
     return f"{x:,.2f}"
-
-# --- End Helpers ---
 
 # --------------- Sidebar Inputs ---------------
 if 'bl_coords_xy' not in st.session_state:
@@ -221,7 +225,7 @@ with st.sidebar:
     mode = st.radio("Footprint source", ["Length & Width", "Area & Aspect", "KML Polygon"])
     
     if mode == "KML Polygon" and not SHAPELY_AVAILABLE:
-        st.error("⚠️ **Shapely** library is required for KML polygon modeling. Please install it.")
+        st.error("⚠️ **Shapely** library is required for KML polygon modeling.")
         
     avg_ground_rl = st.number_input("Avg. ground RL (m)", 0.0, value=100.0, step=1.0)
 
@@ -243,11 +247,12 @@ with st.sidebar:
         if kml is not None:
             A_bl, P_bl, xy_coords = kml_to_area_perimeter_and_xy(kml)
             if A_bl > 0:
-                L_bl, W_bl = rect_from_A_P(A_bl, P_bl) # Keep L_bl, W_bl for reference metrics
+                L_bl, W_bl = rect_from_A_P(A_bl, P_bl)
                 st.session_state.bl_coords_xy = xy_coords
             else:
                 st.error("Could not derive area/perimeter from KML.")
                 
+    # Finalize BL footprint and coords
     if mode != "KML Polygon" or not st.session_state.bl_coords_xy:
         A_bl = L_bl * W_bl
         P_bl = 2*(L_bl + W_bl)
@@ -287,7 +292,7 @@ if is_polygon_mode:
     xy_bbl = polygon_buffer(st.session_state.bl_coords_xy, offset_bbl)
     
     A_bbl, P_bbl = polygon_area_perimeter_xy(xy_bbl) if xy_bbl else (0.0, 0.0)
-    L_bbl, W_bbl = rect_from_A_P(A_bbl, P_bbl) # Re-calculate L,W for display metrics
+    L_bbl, W_bbl = rect_from_A_P(A_bbl, P_bbl)
     
     V_bbl = frustum_volume(A_bbl, A_bl, depth_bg) if depth_bg > 0 else 0.0
     cum_vol += V_bbl
@@ -301,12 +306,14 @@ else:
     L_bbl = max(L_bl - 2*m_exc*depth_bg, 0.0)
     W_bbl = max(W_bl - 2*m_exc*depth_bg, 0.0)
     A_bbl = max(L_bbl*W_bbl, 0.0)
+    xy_bbl = rectangle_polygon(W_bbl, L_bbl) if A_bbl > 0 else []
+    
     V_bbl = frustum_volume(A_bbl, A_bl, depth_bg) if depth_bg > 0 else 0.0
     cum_vol += V_bbl
     rows.append({
         "Level": "BBL", "Length (m)": L_bbl, "Width (m)": W_bbl, "Area (sqm)": A_bbl,
         "Height (m)": depth_bg if depth_bg > 0 else None, "Volume (Cum)": V_bbl, 
-        "Coords_XY": st.session_state.bl_coords_xy 
+        "Coords_XY": xy_bbl
     })
 
 # BL row (reference, GL = 0)
@@ -390,7 +397,7 @@ while True:
 df = pd.DataFrame(rows)
 
 # Totals
-total_height = (depth_bg if depth_bg > 0 else 0.0) + (i-1)*lift_h # (i-1) lifts completed + initial BBL depth
+total_height = (depth_bg if depth_bg > 0 else 0.0) + (i-1)*lift_h
 if total_height < 0: total_height = 0.0
 
 total_volume = cum_vol
@@ -435,28 +442,25 @@ st.subheader("2D and 3D Visualizations")
 # ----------------- 3D Plotting -----------------
 
 def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float):
-    if not PLOTLY_AVAILABLE or not np: return go.Figure()
+    if not PLOTLY_AVAILABLE or not NUMPY_AVAILABLE: return go.Figure()
     
     RL_ref = avg_ground_rl 
     traces = []
     
-    # 1. Check if we are in Polygon Mode
     is_polygon_plot = 'Coords_XY' in df.columns and df['Coords_XY'].iloc[0] is not None
     
-    # Filter to only rows that define a volume/height (ignore sloped tops with Vol=None)
-    df_geom = df[df['Volume (Cum)'].notnull() | (df['Level'] == 'BBL') | (df['Level'] == 'BL')].copy().reset_index(drop=True)
-    
+    # Filter to only the distinct levels (BBL bottom, BL, ABL Berms)
+    df_geom = df[df['Volume (Cum)'].notnull() | (df['Level'] == 'BL') | (df['Level'] == 'BBL')].copy().reset_index(drop=True)
     
     # Z-level pre-calculation: Calculate absolute RL for each distinct level row
     Z_abs_map = {}
     cum_H = 0.0
     for idx, row in df_geom.iterrows():
         if row['Level'] == 'BBL':
-             Z_abs_map[idx] = RL_ref - row['Height (m)'] # BBL bottom
-             cum_H = 0.0
+             Z_abs_map[idx] = RL_ref - row['Height (m)'] 
         elif row['Level'] == 'BL':
-             Z_abs_map[idx] = RL_ref # BL top (Z=0 relative to ground)
-             cum_H = 0.0
+             Z_abs_map[idx] = RL_ref 
+             cum_H = 0.0 # Reset cumulative height at GL
         else: # ABL Berm level
             cum_H += row['Height (m)']
             Z_abs_map[idx] = RL_ref + cum_H
@@ -482,41 +486,50 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float):
             
             if not verts1 or not verts2: continue
             
-            # Use Shapely to ensure the number of vertices is the same for simple frustum joining
-            # Not strictly necessary if the original buffering was clean, but safer.
-            poly1 = Polygon(verts1); poly2 = Polygon(verts2)
-            
-            # Simple assumption: Both levels have the same number of vertices (guaranteed by buffering)
+            # --- FIX: Ensure we use the actual count of vertices for each level ---
             v1_count = len(verts1)
-            
+            v2_count = len(verts2)
+
+            # Polygons must have at least 3 vertices to form a face
+            if v1_count < 3 or v2_count < 3: continue 
+
             # Add vertices to the master list
+            # Vertices for Frustum Bottom (verts1)
             for k in range(v1_count):
                 all_X.append(verts1[k][0])
                 all_Y.append(verts1[k][1])
                 all_Z.append(Z1_abs)
             
-            for k in range(v1_count): # Use v1_count as v2_count
+            # Vertices for Frustum Top (verts2)
+            for k in range(v2_count):
                 all_X.append(verts2[k][0])
                 all_Y.append(verts2[k][1])
                 all_Z.append(Z2_abs)
 
             # Faces (connect bottom to top)
-            for k in range(v1_count):
-                i1, i2 = k, (k + 1) % v1_count  # Bottom corners
-                i3, i4 = k + v1_count, (k + 1) % v1_count + v1_count # Top corners
+            # Only connect faces if the number of vertices is the same for a clean connection
+            if v1_count == v2_count:
+                for k in range(v1_count):
+                    i1, i2 = k, (k + 1) % v1_count      # Bottom corners
+                    i3, i4 = k + v1_count, (k + 1) % v1_count + v1_count # Top corners
 
-                # Face 1 (Triangle 1)
-                all_faces_waste.append([i1 + v_count, i2 + v_count, i4 + v_count])
-                # Face 2 (Triangle 2)
-                all_faces_waste.append([i1 + v_count, i4 + v_count, i3 + v_count])
-            
-            v_count += 2 * v1_count # 2x the number of vertices per polygon
+                    # Face 1 (Triangle 1)
+                    all_faces_waste.append([i1 + v_count, i2 + v_count, i4 + v_count])
+                    # Face 2 (Triangle 2)
+                    all_faces_waste.append([i1 + v_count, i4 + v_count, i3 + v_count])
+                
+                v_count += v1_count + v2_count # Total vertices added in this segment
+            else:
+                 # If counts are different, skip the face generation but ensure v_count is correct.
+                 v_count += v1_count + v2_count
+                 continue
 
         else:
             # Rectangular Mode Mesh Generation (Fallback)
             W1, L1 = row1['Width (m)'], row1['Length (m)']
             W2, L2 = row2['Width (m)'], row2['Length (m)']
             
+            # Z1 and Z2 must be relative to GL=0 for the helper function
             X_seg, Y_seg, Z_seg, faces_seg, v_num_seg = frustum_mesh(W1, L1, Z1_abs-RL_ref, W2, L2, Z2_abs-RL_ref, RL_ref, v_count)
             
             all_X.extend(X_seg)
@@ -540,11 +553,9 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float):
         )
     
     # Ground Level Plane
-    if is_polygon_plot:
-        # Use BL coords for bounding box
-        if st.session_state.bl_coords_xy:
-            poly_bl = Polygon(st.session_state.bl_coords_xy)
-            minx, miny, maxx, maxy = poly_bl.bounds
+    if is_polygon_plot and st.session_state.bl_coords_xy:
+        poly_bl = Polygon(st.session_state.bl_coords_xy)
+        minx, miny, maxx, maxy = poly_bl.bounds
     else:
         minx, miny = -L_bl/2, -W_bl/2
         maxx, maxy = L_bl/2, W_bl/2
@@ -581,12 +592,10 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float):
 
 
 # ----------------- 2D Plotting -----------------
-# NOTE: 2D plotting is complex for arbitrary polygons, so it remains a cross-section of the 
-# EQUIVALENT RECTANGULAR dimensions (L_bl, W_bl) for now to simplify.
+# 2D Plotting is based on the equivalent rectangular dimensions (L_bl, W_bl) for simplification.
 
 def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, axis: str = "W") -> dict:
     
-    # Use L/W metrics (which are the equivalent rectangle dimensions, even in polygon mode)
     df_rect_metrics = df[['Level', 'Length (m)', 'Width (m)', 'Height (m)']].copy()
     
     if axis == "W": 
@@ -594,9 +603,8 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, ax
     else: 
         def get_dim(row): return row["Length (m)"]
     
-    # 1. Inner Profile (Landfill Waste - Blue Line)
     x_in_right = [] ; z_in_right = []
-    Z_current = 0.0 # Relative Z from GL=0
+    Z_current = 0.0
 
     # BBL point
     bbl_row = df_rect_metrics[df_rect_metrics['Level'] == 'BBL'].iloc[0]
@@ -613,38 +621,37 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, ax
     Z_current = 0.0
     for i in range(len(df_rect_metrics)):
         row = df_rect_metrics.iloc[i]
-        if row['Level'].startswith('ABL'):
-            W_ref = get_dim(row)
-            lift_h = row['Height (m)'] if not pd.isna(row['Height (m)']) else 0.0
-            
-            if 'Berm' not in row['Level']: # Sloped top
-                Z_next = Z_current + lift_h
-            else: # Berm base, next lift base
-                Z_next = Z_current # Stays the same Z until the next lift starts
-
-            # Only add points if they define a change in elevation or footprint
-            if not (x_in_right[-1] == W_ref / 2.0 and z_in_right[-1] == Z_next):
-                 x_in_right.append(W_ref / 2.0)
-                 z_in_right.append(Z_next)
-                 
+        if row['Level'].startswith('ABL') and row['Volume (Cum)'] is not None:
+            # Look up the dimensions from the corresponding ABL sloped top
             if 'Berm' in row['Level']:
-                Z_current = Z_next # Update Z_current after the berm is accounted for
-
-    W_top_ref = W_ref # Last calculated dimension
+                # For a Berm row, we need the dimensions of the sloped top *above* it
+                abl_top_row = df_rect_metrics[df_rect_metrics['Level'] == row['Level'].replace(' Berm', '')].iloc[0]
+                W_top_ref = get_dim(abl_top_row)
+                
+                # Point 1: Top of the sloped lift (where the berm starts)
+                # Need to use the Z value calculated from the previous berm's Z + lift height
+                Z_lift_top = Z_current + row['Height (m)'] 
+                x_in_right.append(W_top_ref / 2.0)
+                z_in_right.append(Z_lift_top)
+                
+                # Point 2: End of the berm (start of the next lift)
+                W_berm_ref = get_dim(row)
+                x_in_right.append(W_berm_ref / 2.0)
+                z_in_right.append(Z_lift_top)
+                
+                Z_current = Z_lift_top
+            
+    W_top_ref = get_dim(df_rect_metrics.iloc[-1]) # Final top dimension
     
     x_in_left = [-x for x in x_in_right]; z_in_left = z_in_right
     x_top_plateau = [-W_top_ref / 2.0, W_top_ref / 2.0]
     z_top_plateau = [z_in_right[-1], z_in_right[-1]]
 
-    # 2. Excavation Profile (Pit Boundary) - Red Line (Below GL only)
-    x_excav_right = [W_bl_ref / 2.0] 
-    z_excav_right = [0.0]
-    W_Excav_Base = W_bbl_ref # BBL width
+    # Excavation Profile (Pit Boundary) - Red Line (Below GL only)
+    x_excav_right = [W_bl_ref / 2.0] ; z_excav_right = [0.0]
+    W_Excav_Base = W_bbl_ref
+    x_excav_right.append(W_Excav_Base / 2.0); z_excav_right.append(-depth_bg)
     
-    x_excav_right.append(W_Excav_Base / 2.0)
-    z_excav_right.append(-depth_bg)
-    
-    # Horizontal Excavation Base Plateau
     x_excav_base_plateau = [-W_Excav_Base / 2.0, W_Excav_Base / 2.0]
     z_excav_base_plateau = [-depth_bg, -depth_bg]
 
@@ -694,7 +701,7 @@ fig3d = plotly_3d_full_stack(df, avg_ground_rl)
 if fig3d:
     st.plotly_chart(fig3d, use_container_width=True)
 else:
-    st.warning("Cannot generate 3D plot. Plotly and Numpy must be available.")
+    st.warning("⚠️ Cannot generate 3D plot. Plotly, Numpy, and/or Shapely may be missing or the geometry is invalid.")
     
 # 1. 2D Cross-Section Plot
 section = generate_section_profile(df, depth_bg, m_exc, axis=cross_section_axis[0])
@@ -703,7 +710,7 @@ img = plot_cross_section(section, title=title_caption)
 if img:
     st.image(img, caption=f"2D Cross-section of Stepped Landfill Profile (Waste in Blue, Excavation in Red).")
 else:
-    st.warning("Cannot generate 2D plot. Matplotlib must be available.")
+    st.warning("⚠️ Cannot generate 2D plot. Matplotlib may be missing.")
 
 
 # Export
