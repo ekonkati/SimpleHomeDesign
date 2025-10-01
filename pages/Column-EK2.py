@@ -5,6 +5,7 @@ from typing import List, Tuple, Dict, Any
 # ------------------------- 1. CONSTANTS AND UTILITIES -------------------------
 ES = 200000.0  # MPa (Modulus of Elasticity of Steel)
 EPS_CU = 0.0035  # Ultimate concrete compressive strain
+# Partial safety factors (Note: Not explicitly used in strength calculation here, but good practice)
 GAMMA_M = 1.5  # Partial safety factor for concrete
 GAMMA_S = 1.15 # Partial safety factor for steel
 
@@ -55,7 +56,7 @@ def get_section_forces(c: float, D: float, b: float, fck: float, fy: float, bar_
         Tuple[float, float]: (Total Axial Force Pu, Total Moment Mu)
     """
     # Stress parameters
-    fcd = 0.45 * fck # Max concrete compression stress in steel area (for Ac reduction)
+    fcd = 0.45 * fck # Concrete compression stress for steel area replacement (Cl 39.4)
     fcc = 0.36 * fck # Concrete compression block stress (0.36*fck)
 
     Pu_total = 0.0 # Total Axial Force (N)
@@ -63,21 +64,26 @@ def get_section_forces(c: float, D: float, b: float, fck: float, fy: float, bar_
 
     # 1. Concrete Contribution (Parabola-Rectangle Stress Block)
     if c > 0:
-        # Depth of stress block (xu_max = D if NA is outside section)
-        x_block = min(c, D)
+        # Depth of stress block (x_block = 0.43*c, but cannot exceed D)
+        # For c >= D, the section is fully compressed. This handles that transition.
+        x_block = min(0.42 * c, D)
         
-        # Concrete compression force (Cc) and centroid calculation (IS 456: Cl 38.1 and 39.4)
-        if x_block <= (3/7) * D: # Case 1: Neutral Axis is inside the section
-            # Area of stress block is 0.36 * fck * b * x_block
-            # Centroid is at 0.42 * x_block from compression face
-            Cc = fcc * b * x_block
-            z_c = D/2 - 0.42 * x_block # Lever arm to center
+        # Calculate concrete compression force (Cc) and centroid based on stress block
+        
+        # If the neutral axis is inside the section (c <= D), the stress block is complex (parabola-rectangle)
+        # IS 456 simplifies the centroid: 0.42 * c from the compression face for x_u_max (0.48*d).
+        # We use the simplified equivalent rectangular block for calculation:
+        # Stress block depth is 0.42 * c (x_u_max = 0.48*d)
+        
+        # Simplified equivalent rectangular block approach
+        # The IS 456 stress block centroid is 0.42*c from the compression face (Cl 38.1 and 39.4)
+        Cc = fcc * b * x_block
+        
+        # Centroid of stress block is 0.42 * x_block from compression face
+        z_c = D/2 - 0.42 * x_block # Lever arm to center
             
-        else: # Case 2: Neutral Axis is outside the section (full section compression)
-            # Simplified approach for full compression, using constant 0.45*fck
-            Cc = 0.45 * fck * D * b
-            z_c = 0.0
-            
+        # Note: If c is very large (full compression), x_block becomes D, and this simplification holds well.
+        
         Pu_total += Cc
         Mu_total += Cc * z_c # Moment about center
 
@@ -85,7 +91,7 @@ def get_section_forces(c: float, D: float, b: float, fck: float, fy: float, bar_
     for d_i, As_i in bar_layers:
         
         # Strain in steel (Linear strain distribution)
-        # Strain = EPS_CU * (xu - d_i) / xu
+        # Strain = EPS_CU * (c - d_i) / c
         epsilon_s = EPS_CU * (c - d_i) / c
         
         fs_i = calculate_steel_stress(epsilon_s, fy)
@@ -107,22 +113,19 @@ def get_section_forces(c: float, D: float, b: float, fck: float, fy: float, bar_
 def _uniaxial_capacity_Mu_for_Pu(Pu_target: float, D: float, b: float, fck: float, fy: float, bar_layers: List[Tuple[float, float]]) -> float:
     """
     Finds the Neutral Axis Depth 'c' via Binary Search that satisfies the Pu_target,
-    then returns the corresponding Moment Capacity Mu. (The core logic from col.txt)
+    then returns the corresponding Moment Capacity Mu.
     """
     if Pu_target < 0:
-        # Safety break for tension cases not fully handled by this simplified model
+        # Safety break for tension cases
         return 0.0
 
     # Binary Search Limits: c range
-    # Lower bound: c very close to 0 (high tension, low compression)
-    # Upper bound: c = 2*D (ensures c is well outside the section for max compression)
-    c_low = 1.0  # Cannot be 0
-    c_high = 2.0 * D
+    c_low = 1.0  # Lower bound for c (near pure tension)
+    c_high = 5.0 * D # Upper bound for c (well into full compression)
     
     c_best = 0.0
-    tolerance_Pu = 1.0 # N (0.001 kN)
+    tolerance_Pu = 1.0 # N (1 Newton tolerance)
 
-    # Max iterations for robust binary search (col.txt used a loop, this is more controlled)
     for _ in range(50):
         c_mid = (c_low + c_high) / 2.0
         
@@ -151,7 +154,7 @@ def _uniaxial_capacity_Mu_for_Pu(Pu_target: float, D: float, b: float, fck: floa
 # ------------------------- 3. INTEGRATED DESIGN CHECK -------------------------
 
 def check_column_capacity(
-    b: float, D: float, L_eff: float, L_unsupported: float, fck: float, fy: float, 
+    b: float, D: float, L_unsupported: float, fck: float, fy: float, 
     bar_layers_x: List[Tuple[float, float]], bar_layers_y: List[Tuple[float, float]], 
     Pu_design: float, Mux_design: float, Muy_design: float, k_factor: float
 ) -> Dict[str, Any]:
@@ -162,14 +165,6 @@ def check_column_capacity(
     
     # ------------------ 3a. Minimum Eccentricity and Slenderness ------------------
     
-    # Minimum Eccentricity (Cl 25.4)
-    emin_x = max(L_unsupported / 500.0 + D / 30.0, 20.0)
-    emin_y = max(L_unsupported / 500.0 + b / 30.0, 20.0)
-    
-    # Minimum Moment (N-mm)
-    Mux_min = Pu_design * emin_x
-    Muy_min = Pu_design * emin_y
-
     # Slenderness Check (Cl 25.4)
     le_D = k_factor * L_unsupported / D
     le_b = k_factor * L_unsupported / b
@@ -182,13 +177,20 @@ def check_column_capacity(
     results['le/D'] = le_D
     results['le/b'] = le_b
 
-    # Moment Magnification (delta - Only needed for slender columns)
-    # The moment magnification factor is complex and depends on boundary conditions
-    # For simplicity and compliance, in the integrated code, we *require* the user 
-    # to handle the detailed moment magnification (Cl. 39.7) externally if the column is slender.
-    # If short, delta is 1.0.
+    # Moment Magnification (delta - Assume 1.0 for short columns)
     delta_x = 1.0 
     delta_y = 1.0
+    
+    # If the column is slender, the full magnification calculation (Cl 39.7) is required.
+    # For this short column check, we proceed with delta=1.0.
+
+    # Minimum Eccentricity (Cl 25.4)
+    emin_x = max(L_unsupported / 500.0 + D / 30.0, 20.0)
+    emin_y = max(L_unsupported / 500.0 + b / 30.0, 20.0)
+    
+    # Minimum Moment (N-mm)
+    Mux_min = Pu_design * emin_x
+    Muy_min = Pu_design * emin_y
 
     # Effective Design Moments (Cl 39.5)
     Mux_eff = max(abs(Mux_design * delta_x), Mux_min)
@@ -199,10 +201,10 @@ def check_column_capacity(
     
     # ------------------ 3b. Uniaxial Capacity Limits ------------------
     
-    # Capacity in X-direction (Moment about y-axis)
+    # Capacity in X-direction (Moment about y-axis, D is depth)
     Mux_limit = _uniaxial_capacity_Mu_for_Pu(Pu_design, D, b, fck, fy, bar_layers_x)
     
-    # Capacity in Y-direction (Moment about x-axis - use b as depth, D as width)
+    # Capacity in Y-direction (Moment about x-axis, b is depth)
     # Note: Bar layers for Y-axis moment must be defined w.r.t b (compression face)
     Muy_limit = _uniaxial_capacity_Mu_for_Pu(Pu_design, b, D, fck, fy, bar_layers_y) 
     
@@ -212,7 +214,7 @@ def check_column_capacity(
     # ------------------ 3c. Biaxial Interaction (Annex G) ------------------
 
     # Calculate Puz (Axial only capacity) (Cl 39.3)
-    Asc_total = sum(area for _, area in bar_layers_x) # Total steel area
+    Asc_total = sum(area for _, area in bar_layers_x) # Total steel area (Assuming same for both directions)
     Ac = D * b - Asc_total # Net concrete area
     Puz = 0.45 * fck * Ac + 0.75 * fy * Asc_total
     
@@ -227,15 +229,19 @@ def check_column_capacity(
         alpha = 2.0
     else:
         # Linear interpolation between 0.2 (alpha=1.0) and 0.8 (alpha=2.0)
-        # alpha = 1.0 + (2.0 - 1.0) * (Pu_Puz_ratio - 0.2) / (0.8 - 0.2)
-        alpha = 1.0 + (1.0 / 0.6) * (Pu_Puz_ratio - 0.2) 
+        # alpha = 1.0 + (1.0 / 0.6) * (Pu_Puz_ratio - 0.2) 
+        # (This is the formula from the previous step, correct)
+        alpha = 1.0 + (Pu_Puz_ratio - 0.2) * (1.0 / 0.6) 
         
     results['alpha'] = alpha
     
     # Biaxial Utilization Check
-    if Mux_limit == 0 or Muy_limit == 0:
-        # Handle cases where limit is zero (e.g., pure axial load capacity point)
-        biaxial_util = 0.0 # Will be checked via pure axial check if needed
+    if Mux_limit == 0 and Muy_limit == 0:
+        biaxial_util = 0.0 
+    elif Mux_limit == 0:
+        biaxial_util = (abs(Muy_eff) / Muy_limit)**alpha
+    elif Muy_limit == 0:
+        biaxial_util = (abs(Mux_eff) / Mux_limit)**alpha
     else:
         biaxial_util = (abs(Mux_eff) / Mux_limit)**alpha + (abs(Muy_eff) / Muy_limit)**alpha
         
@@ -270,7 +276,7 @@ d_prime_y = cover # Effective cover in Y-direction
 
 # Bar Layers (d_i, As_i) for Mux calculation (about X-axis, D is depth)
 # d_i is distance from compression face (top or bottom)
-# Example: 4 bars on top, 4 in middle, 4 on bottom
+# Example: 4 bars on top, 4 in middle, 4 on bottom (Total 12 bars)
 bar_layers_x = [
     (d_prime_x, 4 * bar_area_single),                     # Top layer
     (D_section / 2.0, 4 * bar_area_single),              # Middle layer
@@ -279,34 +285,43 @@ bar_layers_x = [
 
 # Bar Layers (d_i, As_i) for Muy calculation (about Y-axis, b is depth)
 # d_i is distance from compression face (left or right)
-# Example: 3 bars on left, 6 in middle, 3 on right (Total 12 bars)
-# NOTE: The bar layers in the other direction are often simplified to be uniform 
-# at the two faces for biaxial checks. This setup assumes a common grid.
+# Example: 4 bars on left, 4 in middle, 4 on right (Total 12 bars - for consistency)
 bar_layers_y = [
     (d_prime_y, 4 * bar_area_single),                     # Left layer
     (b_section / 2.0, 4 * bar_area_single),              # Middle layer
     (b_section - d_prime_y, 4 * bar_area_single)         # Right layer
 ]
 
-print("--- IS 456-2000 Biaxial Column Design Check ---")
-print(f"Section: {D_section}x{b_section} mm | Pu_design: {Pu_design/1e3:.0f} kN")
-print(f"Reinforcement: {sum(area for _, area in bar_layers_x)/1e2:.2f}% (Total {sum(area for _, area in bar_layers_x):.0f} mm²)\n")
+# ----------------- EXECUTE DESIGN CHECK -----------------
 
 design_results = check_column_capacity(
-    b=b_section, D=D_section, L_eff=k_factor * L_unsupported, L_unsupported=L_unsupported, 
+    b=b_section, D=D_section, L_unsupported=L_unsupported, 
     fck=fck, fy=fy, bar_layers_x=bar_layers_x, bar_layers_y=bar_layers_y, 
     Pu_design=Pu_design, Mux_design=Mux_design, Muy_design=Muy_design, k_factor=k_factor
 )
 
+# ----------------- CALCULATE MIN MOMENTS FOR PRINTING (FIXED NameError) -----------------
+# Recalculate Min Moments in the global scope for reporting
+emin_x = max(L_unsupported / 500.0 + D_section / 30.0, 20.0)
+emin_y = max(L_unsupported / 500.0 + b_section / 30.0, 20.0)
+Mux_min = Pu_design * emin_x
+Muy_min = Pu_design * emin_y
+
+
 # --- Output Report ---
+
+print("--- IS 456-2000 Biaxial Column Design Check ---")
+print(f"Section: {D_section}x{b_section} mm | Pu_design: {Pu_design/1e3:.0f} kN")
+print(f"Reinforcement: {sum(area for _, area in bar_layers_x)/1e2:.2f}% (Total {sum(area for _, area in bar_layers_x):.0f} mm²)\n")
+
 
 print("A. Slenderness and Eccentricity")
 print(f"  Unsupported Length (L_un): {L_unsupported/1e3:.2f} m")
 print(f"  Slenderness Ratio (le/D): {design_results['le/D']:.2f} (Max 12.0)")
 print(f"  Slenderness Ratio (le/b): {design_results['le/b']:.2f} (Max 12.0)")
 print(f"  Column Type: {'SHORT' if design_results['is_short'] else 'SLENDER'} (Moment Magnification assumed 1.0 for short)")
-print(f"  Min Eccentricity Moment (X): {Mux_min/1e6:.2f} kNm")
-print(f"  Min Eccentricity Moment (Y): {Muy_min/1e6:.2f} kNm")
+print(f"  Min Eccentricity Moment (X): {Mux_min/1e6:.2f} kNm") # <-- Corrected Line
+print(f"  Min Eccentricity Moment (Y): {Muy_min/1e6:.2f} kNm") # <-- Corrected Line
 print(f"  Effective Design Mux: {design_results['Mux_eff']/1e6:.2f} kNm")
 print(f"  Effective Design Muy: {design_results['Muy_eff']/1e6:.2f} kNm")
 print("-" * 30)
