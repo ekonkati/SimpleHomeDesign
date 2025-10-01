@@ -10,3 +10,5 @@ shapely
 fpdf2
 plotly
 ezdxf
+base64
+json
