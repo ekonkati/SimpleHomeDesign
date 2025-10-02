@@ -43,6 +43,7 @@ st.title("Landfill Levels – BBL, BL, and ABL (with Berms)")
 EARTH_R = 6371000.0
 
 def vh_to_h_per_v(vh: str) -> float:
+    """Converts a V:H slope string (e.g., '1:3') to H/V (e.g., 3.0)."""
     try:
         v, h = vh.split(":")
         return float(h) / float(v)
@@ -56,7 +57,8 @@ def frustum_volume(A1: float, A2: float, H: float) -> float:
 def rectangle_polygon(width: float, length: float) -> List[Tuple[float, float]]:
     """Generates 5 XY points for a closed rectangular footprint centered at (0,0)."""
     half_w, half_l = width / 2.0, length / 2.0
-    return [(-half_w, -half_l), (half_w, -half_l), (half_w, half_l), (-half_w, half_l), (-half_w, -half_l)]
+    return [(-half_w, -half_l), (half_w, -half_l), (half_w, half_l), 
+            (-half_w, half_l), (-half_w, -half_l)]
 
 # --- Geometry Functions for Polygon Mode (KML) ---
 
@@ -72,7 +74,8 @@ def polygon_buffer(xy_coords: List[Tuple[float, float]], offset_dist: float) -> 
         else:
             poly = Polygon(xy_coords)
 
-        # Negative offset for shrinking, positive for expanding. join_style=2 is mitered join
+        # Negative offset for shrinking, positive for expanding.
+        # join_style=2 is mitered join
         new_poly = poly.buffer(offset_dist, join_style=2, mitre_limit=5.0) 
         
         if isinstance(new_poly, MultiPolygon):
@@ -80,7 +83,7 @@ def polygon_buffer(xy_coords: List[Tuple[float, float]], offset_dist: float) -> 
             new_poly = max(new_poly.geoms, key=lambda p: p.area) 
         
         if new_poly.area < 1e-6: return None
-            
+           
         # Extract the exterior coordinates and close the loop for plotting
         new_coords = list(new_poly.exterior.coords)
         if new_coords and new_coords[0] != new_coords[-1]:
@@ -118,7 +121,7 @@ def parse_kml_polygon(file_bytes: bytes) -> Optional[List[Tuple[float,float]]]:
                 pts.append((lat, lon))
             except Exception:
                 pass
-                
+          
     return pts if len(pts) >= 3 else None
 
 def latlon_to_xy(lat, lon, lat0, lon0):
@@ -417,7 +420,7 @@ def get_footprint_corners(W: float, L: float, Z_rel: float, RL_ref: float) -> Li
     ]
 
 def frustum_mesh_rect(W1, L1, Z1_rel, W2, L2, Z2_rel, RL_ref, start_v_index):
-    """Generates mesh vertices and faces for a rectangular frustum section."""
+    """Generates mesh vertices and faces for a rectangular frustum section (waste profile)."""
     if not NUMPY_AVAILABLE: return [], [], [], [], 0
     
     corners1 = get_footprint_corners(W1, L1, Z1_rel, RL_ref)
@@ -442,12 +445,43 @@ def frustum_mesh_rect(W1, L1, Z1_rel, W2, L2, Z2_rel, RL_ref, start_v_index):
     
     return X, Y, Z_abs, faces_np.tolist(), 8 
 
-def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, is_polygon_plot: bool):
+def bund_mesh_rect(W_bl, L_bl, W_out, L_out, H_out, RL_ref, start_v_index):
+    """Generates mesh vertices and faces for the rectangular Outer Bund."""
+    if not NUMPY_AVAILABLE: return [], [], [], [], 0
+    
+    # Footprint 1: BL (Z_rel=0)
+    corners1 = get_footprint_corners(W_bl, L_bl, 0.0, RL_ref)
+    # Footprint 2: Outer Crest (Z_rel=H_out)
+    corners2 = get_footprint_corners(W_out, L_out, H_out, RL_ref)
+    
+    verts = corners1 + corners2 # 8 vertices in total
+
+    faces = []
+    for i in range(4):
+        i1, i2 = i, (i + 1) % 4
+        i3, i4 = i + 4, (i + 1) % 4 + 4
+
+        # Face 1 (Triangle 1) - Side wall
+        faces.append([i1, i2, i4])
+        # Face 2 (Triangle 2) - Side wall
+        faces.append([i1, i4, i3])
+
+    faces_np = np.array(faces) + start_v_index
+    
+    X = [v[0] for v in verts]
+    Y = [v[1] for v in verts]
+    Z_abs = [v[2] for v in verts]
+    
+    return X, Y, Z_abs, faces_np.tolist(), 8 
+
+
+def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, total_height: float, m_out: float, crest_w: float, is_polygon_plot: bool):
     if not PLOTLY_AVAILABLE or not NUMPY_AVAILABLE: return go.Figure()
     
     RL_ref = avg_ground_rl 
     traces = []
     
+    # --- 1. Waste Profile Mesh (Blue) ---
     # Filter to the distinct levels (BBL bottom, BL, ABL Berms)
     df_geom = df[df['Volume (Cum)'].notnull() | (df['Level'] == 'BL') | (df['Level'] == 'BBL')].copy().reset_index(drop=True)
     
@@ -459,13 +493,13 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, is_polygon_plot
              Z_rel_map[idx] = -row['Height (m)'] 
         elif row['Level'] == 'BL':
              Z_rel_map[idx] = 0.0 
-             cum_H = 0.0 
+             cum_H = 0.0 # Reset cum_H for ABL calculations
         else: # ABL Berm level
             cum_H += row['Height (m)']
             Z_rel_map[idx] = cum_H
     
-    all_X, all_Y, all_Z, all_faces_waste = [], [], [], []
-    v_count = 0 
+    all_X_waste, all_Y_waste, all_Z_waste, all_faces_waste = [], [], [], []
+    v_count_waste = 0 
         
     for i in range(len(df_geom) - 1):
         row1 = df_geom.iloc[i] # Bottom level of frustum
@@ -477,7 +511,7 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, is_polygon_plot
         if Z2_rel <= Z1_rel: continue
 
         if is_polygon_plot:
-            # Polygon Mode Mesh Generation (FIXED LOGIC)
+            # Polygon Mode Mesh Generation (Fixed logic for waste)
             verts1_raw = row1['Coords_XY'] 
             verts2_raw = row2['Coords_XY'] 
             
@@ -490,11 +524,8 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, is_polygon_plot
             v1_count = len(verts1)
             v2_count = len(verts2)
 
-            # NOTE: For irregular polygons, if vertex counts differ, simple connection fails.
-            # We enforce v1_count == v2_count for correct side-wall meshing.
+            # NOTE: We rely on matching counts for side-wall meshing.
             if v1_count != v2_count:
-                # If they differ, skip side wall faces but still add vertices for top/bottom surfaces if needed
-                # For this frustum method, we rely on matching counts.
                 continue 
             
             Z1_abs = Z1_rel + RL_ref
@@ -510,9 +541,9 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, is_polygon_plot
             for k in range(v2_count):
                 current_layer_verts.append((verts2[k][0], verts2[k][1], Z2_abs))
 
-            all_X.extend([v[0] for v in current_layer_verts])
-            all_Y.extend([v[1] for v in current_layer_verts])
-            all_Z.extend([v[2] for v in current_layer_verts])
+            all_X_waste.extend([v[0] for v in current_layer_verts])
+            all_Y_waste.extend([v[1] for v in current_layer_verts])
+            all_Z_waste.extend([v[2] for v in current_layer_verts])
 
 
             # --- FACE GENERATION (Side Walls) ---
@@ -522,24 +553,24 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, is_polygon_plot
                 i3, i4 = k + v1_count, (k + 1) % v1_count + v1_count # Top corners
 
                 # Face 1 (Triangle 1): i1, i2, i4
-                all_faces_waste.append([i1 + v_count, i2 + v_count, i4 + v_count])
+                all_faces_waste.append([i1 + v_count_waste, i2 + v_count_waste, i4 + v_count_waste])
                 # Face 2 (Triangle 2): i1, i4, i3
-                all_faces_waste.append([i1 + v_count, i4 + v_count, i3 + v_count])
+                all_faces_waste.append([i1 + v_count_waste, i4 + v_count_waste, i3 + v_count_waste])
             
-            v_count += v1_count + v2_count
+            v_count_waste += v1_count + v2_count
 
         else:
             # Rectangular Mode Mesh Generation
             W1, L1 = row1['Width (m)'], row1['Length (m)']
             W2, L2 = row2['Width (m)'], row2['Length (m)']
             
-            X_seg, Y_seg, Z_seg, faces_seg, v_num_seg = frustum_mesh_rect(W1, L1, Z1_rel, W2, L2, Z2_rel, RL_ref, v_count)
+            X_seg, Y_seg, Z_seg, faces_seg, v_num_seg = frustum_mesh_rect(W1, L1, Z1_rel, W2, L2, Z2_rel, RL_ref, v_count_waste)
             
-            all_X.extend(X_seg)
-            all_Y.extend(Y_seg)
-            all_Z.extend(Z_seg)
+            all_X_waste.extend(X_seg)
+            all_Y_waste.extend(Y_seg)
+            all_Z_waste.extend(Z_seg)
             all_faces_waste.extend(faces_seg)
-            v_count += v_num_seg
+            v_count_waste += v_num_seg
 
     if all_faces_waste:
         I_waste = [f[0] for f in all_faces_waste]
@@ -548,30 +579,68 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, is_polygon_plot
         
         traces.append(
             go.Mesh3d(
-                x=all_X, y=all_Y, z=all_Z,
+                x=all_X_waste, y=all_Y_waste, z=all_Z_waste,
                 i=I_waste, j=J_waste, k=K_waste,
                 opacity=0.8, color='rgba(0, 0, 255, 0.6)', 
                 name='Waste (Landfill Profile)', hoverinfo='name'
             )
         )
     
-    # Ground Level Plane
+    # --- 2. Outer Bund Mesh (Red/Black) ---
+    bl_row = df[df['Level'] == 'BL'].iloc[0]
+    W_bl, L_bl = bl_row[['Width (m)', 'Length (m)']]
+    final_H = total_height - (depth_bg if depth_bg > 0 else 0.0) # Total height of ABL lifts
+    
+    # Calculate outer crest dimensions
+    W_out = W_bl + 2 * m_out * final_H + 2 * crest_w
+    L_out = L_bl + 2 * m_out * final_H + 2 * crest_w
+    
+    # The Bund mesh will represent the area from the BL edge outward and up
+    if not is_polygon_plot and final_H > 0:
+        
+        X_bund, Y_bund, Z_bund, faces_bund, v_num_bund = bund_mesh_rect(W_bl, L_bl, W_out, L_out, final_H, RL_ref, 0)
+        
+        I_bund = [f[0] for f in faces_bund]
+        J_bund = [f[1] for f in faces_bund]
+        K_bund = [f[2] for f in faces_bund]
+        
+        traces.append(
+            go.Mesh3d(
+                x=X_bund, y=Y_bund, z=Z_bund,
+                i=I_bund, j=J_bund, k=K_bund,
+                opacity=0.15, color='rgba(0, 0, 0, 0.2)', 
+                name='Outer Bund (Exterior Shell)', hoverinfo='name'
+            )
+        )
+
+    
+    # --- 3. Ground Level Plane ---
     xy_bl = df[df['Level'] == 'BL'].iloc[0]['Coords_XY']
     if xy_bl and SHAPELY_AVAILABLE:
         # Use the footprint polygon's bounds for the ground plane extent
-        poly_bl = Polygon(xy_bl)
-        minx, miny, maxx, maxy = poly_bl.bounds
+        # If we plotted the Bund, use the Bund's outer bounds for the ground plane
+        if not is_polygon_plot and final_H > 0:
+            minx, miny = -L_out/2 * 1.05, -W_out/2 * 1.05
+            maxx, maxy = L_out/2 * 1.05, W_out/2 * 1.05
+        else:
+            poly_bl = Polygon(xy_bl)
+            minx, miny, maxx, maxy = poly_bl.bounds
+            minx, miny = minx * 1.05, miny * 1.05
+            maxx, maxy = maxx * 1.05, maxy * 1.05
     else:
         # Fallback to rectangular bounds 
-        L_bl, W_bl = df[df['Level'] == 'BL'].iloc[0][['Length (m)', 'Width (m)']]
-        minx, miny = -L_bl/2, -W_bl/2
-        maxx, maxy = L_bl/2, W_bl/2
-
+        if final_H > 0:
+            minx, miny = -L_out/2 * 1.05, -W_out/2 * 1.05
+            maxx, maxy = L_out/2 * 1.05, W_out/2 * 1.05
+        else:
+            minx, miny = -L_bl/2 * 1.05, -W_bl/2 * 1.05
+            maxx, maxy = L_bl/2 * 1.05, W_bl/2 * 1.05
+            
     gl_z = RL_ref
     traces.append(
         go.Surface(
-            x=np.linspace(minx * 1.05, maxx * 1.05, 2),
-            y=np.linspace(miny * 1.05, maxy * 1.05, 2), 
+            x=np.linspace(minx, maxx, 2),
+            y=np.linspace(miny, maxy, 2), 
             z=np.full((2, 2), gl_z),
             colorscale=[[0, 'rgba(0, 128, 0, 0.2)'], [1, 'rgba(0, 128, 0, 0.2)']],
             showscale=False, 
@@ -600,15 +669,17 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, is_polygon_plot
 
 # ----------------- 2D Plotting (Fix for Berms) -----------------
 
-def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, m_out: float, crest_w: float, axis: str = "W") -> dict:
+def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, m_out: float, crest_w: float, total_height: float, axis: str = "W") -> dict:
     """Calculates all profile points for the 2D cross-section."""
     
     df_rect_metrics = df[['Level', 'Length (m)', 'Width (m)', 'Height (m)', 'Volume (Cum)']].copy()
     
     if axis == "W": 
         def get_dim(row): return row["Width (m)"]
+        bl_dim = df_rect_metrics[df_rect_metrics['Level'] == 'BL'].iloc[0]['Width (m)']
     else: 
         def get_dim(row): return row["Length (m)"]
+        bl_dim = df_rect_metrics[df_rect_metrics['Level'] == 'BL'].iloc[0]['Length (m)']
     
     # --- 1. Waste Profile (Inner/Blue Line) ---
     x_in_right = [] ; z_in_right = []
@@ -640,20 +711,20 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, m_
             # Point 1: Sloped top (start of berm bench)
             x_in_right.append(W_top_ref / 2.0)
             z_in_right.append(Z_lift_top)
-            
+        
             # Point 2: Berm edge (end of berm bench)
             W_berm_ref = get_dim(row)
             x_in_right.append(W_berm_ref / 2.0)
             z_in_right.append(Z_lift_top)
             
             Z_current = Z_lift_top # New Z for the next lift start
-            
+           
     W_top_final = get_dim(df_rect_metrics.iloc[-1])
-    final_H = Z_current
+    final_H_waste = Z_current
 
     x_in_left = [-x for x in x_in_right]; z_in_left = z_in_right
     x_top_plateau = [-W_top_final / 2.0, W_top_final / 2.0]
-    z_top_plateau = [final_H, final_H]
+    z_top_plateau = [final_H_waste, final_H_waste]
 
 
     # --- 2. Excavation Profile (Red/Yellow Line) ---
@@ -666,21 +737,26 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, m_
     x_excav_left = [-x for x in x_excav_right]; z_excav_left = z_excav_right
 
     # --- 3. Outer Profile / Bund (Black Line) ---
-    # Slopes up from BL (0.0m) to TOB (final_H)
+    final_H_total = total_height
+    final_H_abl = total_height - (depth_bg if depth_bg > 0 else 0.0)
     
-    x_out_right = [W_bl_ref / 2.0] ; z_out_right = [0.0]
+    x_out_right = [W_bl_ref / 2.0] ; z_out_right = [0.0] # Start at BL edge (Z=0)
     
     # Outer slope up to TOB
-    W_top_outer = W_bl_ref + 2 * m_out * final_H
+    W_top_outer = W_bl_ref + 2 * m_out * final_H_abl
     x_out_right.append(W_top_outer / 2.0)
-    z_out_right.append(final_H)
+    z_out_right.append(final_H_abl)
     
     # Crest width (TOB)
     W_crest = W_top_outer + 2 * crest_w # Distance to the edge of the crest
     x_out_right.append(W_crest / 2.0)
-    z_out_right.append(final_H)
+    z_out_right.append(final_H_abl) # TOL is at final ABL lift height
     
     x_out_left = [-x for x in x_out_right]; z_out_left = z_out_right
+    
+    # TOL line span (from one side of the crest to the other)
+    x_tol_span = [-W_crest / 2.0, W_crest / 2.0]
+    z_tol_span = [final_H_abl, final_H_abl]
     
     return {
         "x_in_left": x_in_left, "z_in_left": z_in_left, "x_in_right": x_in_right, "z_in_right": z_in_right,
@@ -689,8 +765,9 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, m_
         "x_excav_left": x_excav_left, "z_excav_left": z_excav_left,
         "x_excav_base_plateau": x_excav_base_plateau, "z_excav_base_plateau": z_excav_base_plateau, 
         "x_out_left": x_out_left, "z_out_left": z_out_left, "x_out_right": x_out_right, "z_out_right": z_out_right,
+        "x_tol_span": x_tol_span, "z_tol_span": z_tol_span,
         "axis": axis,
-        "max_z": final_H 
+        "max_z": final_H_abl 
     }
 
 def plot_cross_section(section: dict, title: str) -> Optional[bytes]:
@@ -701,22 +778,24 @@ def plot_cross_section(section: dict, title: str) -> Optional[bytes]:
     # 1. Outer Profile (Bund/Black Line - includes crest)
     ax.plot(section["x_out_left"], section["z_out_left"], marker='.', linestyle='-', color='k', linewidth=2, label="Outer Profile (Bund)")
     ax.plot(section["x_out_right"], section["z_out_right"], marker='.', linestyle='-', color='k', linewidth=2)
-    ax.axhline(section["max_z"], xmin=0.5 + section["x_out_left"][-1]/(section["x_out_right"][-1] - section["x_out_left"][-1])/2, xmax=0.5 - section["x_out_left"][-1]/(section["x_out_right"][-1] - section["x_out_left"][-1])/2, color='r', linewidth=1.5, linestyle='--', label="Top of Landfill (TOL)")
+    
+    # 2. Top of Landfill (TOL) - Spans the full crest width
+    ax.plot(section["x_tol_span"], section["z_tol_span"], color='r', linewidth=1.5, linestyle='--', label="Top of Landfill (TOL)")
 
-    # 2. Waste Profile (Inner/Blue Line - stepped profile)
+    # 3. Waste Profile (Inner/Blue Line - stepped profile)
     ax.plot(section["x_in_left"], section["z_in_left"], marker='o', linestyle='-', color='b', label="Waste Profile")
     ax.plot(section["x_in_right"], section["z_in_right"], marker='o', linestyle='-', color='b')
     ax.plot(section["x_top_plateau"], section["z_top_plateau"], linestyle='-', color='b')
     ax.plot(section["x_excav_base_plateau"], section["z_excav_base_plateau"], linestyle='-', color='b')
     
-    # 3. Excavation Profile (Pit Boundary - Red/Yellow Line)
+    # 4. Excavation Profile (Pit Boundary - Red/Yellow Line)
     ax.plot(section["x_excav_right"], section["z_excav_right"], linestyle='-', color='r', linewidth=3, label="Excavation Pit Wall")
     ax.plot(section["x_excav_left"], section["z_excav_left"], linestyle='-', color='r', linewidth=3)
     
-    # 4. Reference Line
+    # 5. Reference Line
     ax.axhline(0, color='g', linewidth=1.5, linestyle=':', label="Ground Level (BL/GL)")
     
-    # 5. Final Plot Setup
+    # 6. Final Plot Setup
     ax.set_xlabel(f"{section['axis']}-axis distance (m)")
     ax.set_ylabel("Z (m)")
     ax.set_title(title)
@@ -724,22 +803,22 @@ def plot_cross_section(section: dict, title: str) -> Optional[bytes]:
     ax.legend(loc='upper left')
     ax.axis('equal')
     
-    buf = BytesIO();
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150); plt.close(fig)
+    buf = BytesIO(); fig.savefig(buf, format="png", bbox_inches="tight", dpi=150); plt.close(fig)
     return buf.getvalue()
 
 
 # ----------------- Display Plots -----------------
 
 # 2. 3D Plot
-fig3d = plotly_3d_full_stack(df, avg_ground_rl, is_polygon_mode)
+# total_height includes BBL, but we need ABL height for outer bund
+fig3d = plotly_3d_full_stack(df, avg_ground_rl, total_height, m_out, crest_w, is_polygon_mode)
 if fig3d:
     st.plotly_chart(fig3d, use_container_width=True)
 else:
     st.warning("⚠️ Cannot generate 3D plot. Plotly, Numpy, and/or Shapely must be available.")
     
 # 1. 2D Cross-Section Plot
-section = generate_section_profile(df, depth_bg, m_exc, m_out, crest_w, axis=cross_section_axis[0])
+section = generate_section_profile(df, depth_bg, m_exc, m_out, crest_w, total_height, axis=cross_section_axis[0])
 title_caption = f"Cross-section along {cross_section_axis} Axis (Based on Equivalent Rectangular Dimensions)"
 img = plot_cross_section(section, title=title_caption)
 if img:
@@ -766,4 +845,4 @@ st.download_button("Download Excel (Levels + Totals)", buffer.getvalue(),
                    file_name="landfill_levels_bbl_bl_abl.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption(f"Notes: The 3D model now displays the **actual KML polygon shape** (if **Shapely** is installed and KML uploaded) with corrected meshing. The 2D cross-section now includes the correct stepped **Waste Profile** and a distinct **Outer Profile (Bund)**, which rises from Ground Level.")
+st.caption(f"Notes: The 3D model now includes an **Outer Bund (Exterior Shell)** representation (for Rectangular Mode only) to align with the 2D cross-section. The 2D cross-section displays the correct stepped **Waste Profile** and a distinct **Outer Profile (Bund)**, which rises from Ground Level.")
