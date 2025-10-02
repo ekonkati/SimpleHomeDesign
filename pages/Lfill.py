@@ -6,7 +6,6 @@ from typing import List, Tuple, Optional, Dict
 from io import BytesIO
 
 # --- Optional Imports for Plotting & Geometry ---
-# These are essential for KML and 3D visualization
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
@@ -291,7 +290,7 @@ rows.append({
 # BL row (reference, Z_rel=0)
 rows.append({
     "Level": "BL", "Length (m)": L_bl, "Width (m)": W_bl, "Area (sqm)": A_bl,
-    "Height (m)": None, "Volume (Cum)": None, "Coords_XY": xy_bl, "Lift_ID": None
+    "Height (m)": None, "Volume (Cum)": None, "Coords_XY": xy_bl, "Lift_ID": -1 # Use -1 for BL as separator
 })
 
 # --- ABL ITERATION ---
@@ -368,7 +367,7 @@ while True:
 df = pd.DataFrame(rows)
 
 # Totals
-total_height = (depth_bg if depth_bg > 0 else 0.0) + (i * lift_h)
+total_height = (depth_bg if depth_bg > 0 else 0.0) + ((i-1) * lift_h) # Corrected height accumulation
 total_volume = cum_vol
 total_tons = total_volume * density
 years = (total_tons / tpa) if tpa > 0 else None
@@ -495,31 +494,58 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, total_height: f
     # Define a color palette for the individual lifts
     COLORS = ['#3366cc', '#dc3912', '#ff9900', '#109618', '#990099', '#0099c6', '#dd4477', '#66aa00', '#b82e2e', '#314798']
     
-    # Filter to the distinct levels (BBL bottom, BL, ABL Berms)
-    df_geom = df[df['Lift_ID'].notnull() | (df['Level'] == 'BL')].copy().reset_index(drop=True)
+    # Filter to the distinct segments defined by the BBL level and ABL Berm levels
+    # The segment is defined from (Level 1) to (Level 2/Berm). The volume and Lift_ID are on the Level 2/Berm row.
+    df_geom = df[df['Level'] == 'BBL'].copy()
+    df_geom = pd.concat([df_geom, df[df['Level'].str.endswith('Berm')]], ignore_index=True)
+    df_geom.sort_values(by='Lift_ID', inplace=True)
+    df_geom.reset_index(drop=True, inplace=True)
     
-    # Z-level calculation
-    Z_rel_map = {}
-    cum_H = 0.0
-    for idx, row in df_geom.iterrows():
-        if row['Level'] == 'BBL':
-             Z_rel_map[idx] = -row['Height (m)'] 
-        elif row['Level'] == 'BL':
-             Z_rel_map[idx] = 0.0 
-             cum_H = 0.0 # Reset cum_H for ABL calculations
-        else: # ABL Berm level
-            cum_H += row['Height (m)']
-            Z_rel_map[idx] = cum_H
+    # Create a list of levels that define the top and bottom of each frustum segment
+    frustum_segments = []
+    
+    # BBL segment (Bottom is BBL, Top is BL)
+    if not df_geom.empty and df_geom.iloc[0]['Lift_ID'] == 0:
+        row_bbl = df_geom.iloc[0]
+        row_bl = df[df['Level'] == 'BL'].iloc[0]
+        frustum_segments.append({
+            'bottom': row_bbl, 
+            'top': row_bl, 
+            'Z1_rel': -row_bbl['Height (m)'], 
+            'Z2_rel': 0.0,
+            'Lift_ID': 0 # BBL
+        })
+
+    # ABL segments (Bottom is previous Berm/BL, Top is current Berm)
+    df_berms = df[df['Level'].str.endswith('Berm')].sort_values(by='Lift_ID')
+    
+    Z_cum_h = 0.0 # Height of previous berm (start at BL/GL)
+    
+    for i in range(len(df_berms)):
+        row_current_berm = df_berms.iloc[i]
+        
+        if i == 0:
+            row_bottom = df[df['Level'] == 'BL'].iloc[0]
+        else:
+            row_bottom = df_berms.iloc[i-1]
+        
+        Z_cum_h += row_current_berm['Height (m)'] # Total height of waste up to this berm's top
+        
+        frustum_segments.append({
+            'bottom': row_bottom,
+            'top': row_current_berm, 
+            'Z1_rel': Z_cum_h - row_current_berm['Height (m)'], # Z level of the bench below
+            'Z2_rel': Z_cum_h, # Z level of the current bench
+            'Lift_ID': int(row_current_berm['Lift_ID'])
+        })
     
     # --- 1. Waste Profile Meshes (Per Segment) ---
-    for i in range(len(df_geom) - 1):
-        row1 = df_geom.iloc[i] # Bottom level of frustum
-        row2 = df_geom.iloc[i+1] # Top level of frustum
+    for i, seg in enumerate(frustum_segments):
         
-        Z1_rel = Z_rel_map.get(i, 0.0)
-        Z2_rel = Z_rel_map.get(i+1, 0.0)
-        lift_id = int(row2['Lift_ID']) # Lift ID from the top boundary row
-        
+        Z1_rel = seg['Z1_rel']
+        Z2_rel = seg['Z2_rel']
+        lift_id = seg['Lift_ID']
+
         if Z2_rel <= Z1_rel: continue
 
         # Assign color based on Lift_ID
@@ -533,19 +559,11 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, total_height: f
         # --- Geometry Calculation ---
         X_seg, Y_seg, Z_seg, faces_seg = [], [], [], []
 
-        if is_polygon_plot:
-            # NOTE: Polygon meshing for multi-colored layers is complex due to triangulation.
-            # Sticking to a single color for now in KML mode, or needing a complex polygon meshing library.
-            # For this update, we will simply use the rectangular approximation for KML coloring
-            # to fulfill the user's request while acknowledging the KML limitation.
-            W1, L1 = row1['Width (m)'], row1['Length (m)']
-            W2, L2 = row2['Width (m)'], row2['Length (m)']
-            X_seg, Y_seg, Z_seg, faces_seg = frustum_mesh_rect(W1, L1, Z1_rel, W2, L2, Z2_rel, RL_ref)
-        else:
-            # Rectangular Mode Mesh Generation (Frustum side walls)
-            W1, L1 = row1['Width (m)'], row1['Length (m)']
-            W2, L2 = row2['Width (m)'], row2['Length (m)']
-            X_seg, Y_seg, Z_seg, faces_seg = frustum_mesh_rect(W1, L1, Z1_rel, W2, L2, Z2_rel, RL_ref)
+        # Rectangular Mode Mesh Generation (Frustum side walls)
+        W1, L1 = seg['bottom']['Width (m)'], seg['bottom']['Length (m)']
+        W2, L2 = seg['top']['Width (m)'], seg['top']['Length (m)']
+        X_seg, Y_seg, Z_seg, faces_seg = frustum_mesh_rect(W1, L1, Z1_rel, W2, L2, Z2_rel, RL_ref)
+
 
         if faces_seg:
             I_seg = [f[0] for f in faces_seg]
@@ -562,8 +580,9 @@ def plotly_3d_full_stack(df: pd.DataFrame, avg_ground_rl: float, total_height: f
             )
             
         # --- Add Top Surface Mesh for the Final Lift ---
-        if i == len(df_geom) - 2 and not is_polygon_plot: # Final ABL lift and in Rectangular mode
-            W_top, L_top = row2['Width (m)'], row2['Length (m)']
+        # The top surface is defined by the coordinates of the current berm (the top of the segment)
+        if i == len(frustum_segments) - 1: # Final ABL lift segment
+            W_top, L_top = seg['top']['Width (m)'], seg['top']['Length (m)']
             X_top, Y_top, Z_top, faces_top = top_surface_mesh_rect(W_top, L_top, Z2_rel, RL_ref)
             
             if faces_top:
@@ -654,10 +673,12 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, m_
     
     if axis == "W": 
         def get_dim(row): return row["Width (m)"]
-        bl_dim = df_rect_metrics[df_rect_metrics['Level'] == 'BL'].iloc[0]['Width (m)']
+        bl_row = df_rect_metrics[df_rect_metrics['Level'] == 'BL'].iloc[0]
+        bl_dim = get_dim(bl_row)
     else: 
         def get_dim(row): return row["Length (m)"]
-        bl_dim = df_rect_metrics[df_rect_metrics['Level'] == 'BL'].iloc[0]['Length (m)']
+        bl_row = df_rect_metrics[df_rect_metrics['Level'] == 'BL'].iloc[0]
+        bl_dim = get_dim(bl_row)
     
     # --- 1. Waste Profile (Inner/Blue Line) ---
     x_in_right = [] ; z_in_right = []
@@ -670,7 +691,6 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, m_
     z_in_right.append(-depth_bg)
     
     # BL Point (Inner) - waste profile starts here
-    bl_row = df_rect_metrics[df_rect_metrics['Level'] == 'BL'].iloc[0]
     W_bl_ref = get_dim(bl_row)
     x_in_right.append(W_bl_ref / 2.0)
     z_in_right.append(0.0) # BL is Z=0
@@ -715,7 +735,6 @@ def generate_section_profile(df: pd.DataFrame, depth_bg: float, m_exc: float, m_
     x_excav_left = [-x for x in x_excav_right]; z_excav_left = z_excav_right
 
     # --- 3. Outer Profile / Bund (Black Line) ---
-    final_H_total = total_height
     final_H_abl = total_height - (depth_bg if depth_bg > 0 else 0.0)
     
     x_out_right = [W_bl_ref / 2.0] ; z_out_right = [0.0] # Start at BL edge (Z=0)
